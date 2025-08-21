@@ -1,0 +1,25 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+
+    <!-- Gift icon group -->
+    <group android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="12"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000">
+        <path android:pathData="M40,112h176a16,16 0 0 1 16,16v72a16,16 0 0 1 -16,16H56a16,16 0 0 1 -16,-16v-88z"/>
+        <path android:pathData="M32,88h192a8,8 0 0 1 8,8v16a8,8 0 0 1 -8,8H40a8,8 0 0 1 -8,-8v-24z"/>
+        <path android:pathData="M128,88v128"/>
+        <path android:pathData="M128,88c-10,-22 -40,-34 -52,-18 -8,10 -2,26 18,26 10,0 22,-3 34,-8z"/>
+        <path android:pathData="M128,88c10,-22 40,-34 52,-18 8,10 2,26 -18,26 -10,0 -22,-3 -34,-8z"/>
+    </group>
+
+    <!-- "GiftQuest" text as a path -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M50,220h156v12H50z" /> <!-- placeholder underline -->
+    <!-- For actual text, you'd replace with converted vector text shapes from Figma/Inkscape -->
+</vector>

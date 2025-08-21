@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "47304546314",
+    "project_id": "gift-guess-app",
+    "storage_bucket": "gift-guess-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:47304546314:android:2aee821d9f862fb6d267f3",
+        "android_client_info": {
+          "package_name": "com.example.giftquest"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAgrCy_3I2T6pfUSU3nJYze8buiUtYc-fA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

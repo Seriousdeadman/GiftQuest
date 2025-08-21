@@ -1,0 +1,70 @@
+package com.example.giftquest.ui.screens
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.giftquest.ui.components.AppTopBar
+import com.example.giftquest.ui.guess.GuessViewModel
+import com.google.firebase.auth.FirebaseAuth
+
+@Composable
+fun GuessChatScreen(
+    itemId: Long,
+    onBack: () -> Unit
+) {
+    // Our GuessViewModel extends AndroidViewModel, so default viewModel() works
+    val vm: GuessViewModel = viewModel()
+
+    // Collect the flow of all guesses and filter by itemId for this screen
+    val allGuesses by vm.guessesFlow.collectAsState()
+    val guessesForItem = remember(allGuesses, itemId) {
+        allGuesses.filter { it.itemId == itemId }
+    }
+
+    var input by remember { mutableStateOf("") }
+    val currentUid = FirebaseAuth.getInstance().currentUser?.uid ?: "anon"
+
+    Scaffold(
+        topBar = { AppTopBar(title = "Guess Chat", onBack = onBack) },
+        bottomBar = {
+            Row(Modifier.padding(12.dp)) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Type your guess…") }
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        val text = input.trim()
+                        if (text.isNotEmpty()) {
+                            vm.addGuess(itemId = itemId, text = text, uid = currentUid)
+                            input = ""
+                        }
+                    }
+                ) {
+                    Text("Send")
+                }
+            }
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .padding(padding)
+                .padding(16.dp)
+                .fillMaxSize()
+        ) {
+            items(guessesForItem) { g ->
+                val label = if (g.guessedByUid == currentUid) "You" else "Partner"
+                Text("$label: ${g.guessText}")
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
