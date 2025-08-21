@@ -3,7 +3,6 @@ package com.example.giftquest
 import android.app.Application
 import androidx.room.Room
 import com.example.giftquest.data.local.AppDatabase
-import com.example.giftquest.data.local.MIGRATION_1_2
 
 class GiftQuestApplication : Application() {
     lateinit var database: AppDatabase
@@ -12,15 +11,15 @@ class GiftQuestApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // Use a brand-new file name for dev so no stale DB can be reused
         database = Room.databaseBuilder(
             applicationContext,
             AppDatabase::class.java,
-            "giftquest.db"
+            /* NEW NAME */ "giftquest_dev_v5.db"
         )
-            // while developing, this guarantees no crash on version mismatch
+            // Dev-only: drop & recreate on any mismatch
             .fallbackToDestructiveMigration()
-            // keep your explicit migrations too (fine to have both)
-            .addMigrations(MIGRATION_1_2)
+            // DO NOT add any .addMigrations(...) while iterating
             .build()
     }
 }

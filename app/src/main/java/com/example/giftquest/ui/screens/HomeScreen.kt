@@ -45,10 +45,11 @@ fun HomeScreen(
     val returned = saved?.get<String>("newItem")
     LaunchedEffect(returned) {
         if (returned != null) {
-            vm.addItem(title = returned)     // <-- persist to Room (scoped by user)
+            vm.addItem(title = returned)   // <- write to Firestore; listener mirrors to Room
             saved.remove<String>("newItem")
         }
     }
+
 
 
     // Local working list for drag UI. Only sync when NOT dragging.

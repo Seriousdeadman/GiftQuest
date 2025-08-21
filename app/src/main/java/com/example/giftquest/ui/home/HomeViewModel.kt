@@ -19,23 +19,51 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     private val db = (app as GiftQuestApplication).database
     private val repo = ItemsRepository(db.itemDao())
 
-    // temporary until Firebase is wired
-    val user = FirebaseAuth.getInstance().currentUser
+    private val uid: String? = FirebaseAuth.getInstance().currentUser?.uid
+    private val coupleId: String? = uid   // TEMP: couple == yourself
 
-    private val UID = user?.uid ?: "anon"
-    private val COUPLE_ID = UID
-
+    // If not logged in we expose an empty stream; HomeScreen should only reach here when logged-in
     val items: StateFlow<List<ItemEntity>> =
-        repo.itemsFlow(COUPLE_ID)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        if (coupleId != null)
+            repo.itemsFlow(coupleId)
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+        else
+            kotlinx.coroutines.flow.flowOf(emptyList<ItemEntity>())
+                .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    fun addItem(title: String) {
-        viewModelScope.launch { repo.addItem(title = title, uid = UID, coupleId = COUPLE_ID) }
+    init {
+        // Start Firestore -> Room mirroring when we have an authenticated user
+        coupleId?.let { repo.startSync(it) }
     }
 
-    fun moveUp(id: Long) { viewModelScope.launch { repo.moveItemUp(id) } }
-    fun moveDown(id: Long) { viewModelScope.launch { repo.moveItemDown(id) } }
-    fun reorder(idsInOrder: List<Long>) { viewModelScope.launch { repo.reorder(idsInOrder) } }
+    override fun onCleared() {
+        // Stop listener to avoid leaks
+        repo.stopSync()
+        super.onCleared()
+    }
+
+    fun addItem(title: String) {
+        val u = uid ?: return    // not logged in; ignore
+        val c = coupleId ?: return
+        viewModelScope.launch {
+            repo.addItem(title = title, uid = u, coupleId = c)
+        }
+    }
+
+    fun moveUp(id: Long) {
+        val c = coupleId ?: return
+        viewModelScope.launch { repo.moveItemUp(id, c) }
+    }
+
+    fun moveDown(id: Long) {
+        val c = coupleId ?: return
+        viewModelScope.launch { repo.moveItemDown(id, c) }
+    }
+
+    fun reorder(idsInOrder: List<Long>) {
+        val c = coupleId ?: return
+        viewModelScope.launch { repo.reorder(idsInOrder, c) }
+    }
 
     companion object {
         fun factory(app: Application) = object : ViewModelProvider.Factory {

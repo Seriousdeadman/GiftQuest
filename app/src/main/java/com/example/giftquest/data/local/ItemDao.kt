@@ -13,16 +13,20 @@ interface ItemDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: ItemEntity): Long
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<ItemEntity>)
+
     @Update
     suspend fun update(item: ItemEntity)
 
     @Query("UPDATE items SET position = :position WHERE id = :id")
     suspend fun updatePosition(id: Long, position: Double)
 
+    @Query("DELETE FROM items WHERE coupleId = :coupleId")
+    suspend fun clearForCouple(coupleId: String)
+
     @Query("DELETE FROM items")
     suspend fun clearAll()
-
-    // ---- helpers ported from the other DAO ----
 
     @Query("SELECT MAX(position) FROM items")
     suspend fun maxPosition(): Double?
@@ -46,9 +50,13 @@ interface ItemDao {
     }
 
     @Transaction
+    suspend fun replaceAllForCouple(coupleId: String, items: List<ItemEntity>) {
+        clearForCouple(coupleId)
+        if (items.isNotEmpty()) insertAll(items)
+    }
+
+    @Transaction
     suspend fun applyOrder(idsInOrder: List<Long>) {
-        idsInOrder.forEachIndexed { index, id ->
-            setPosition(id, index.toDouble())
-        }
+        idsInOrder.forEachIndexed { index, id -> setPosition(id, index.toDouble()) }
     }
 }
