@@ -5,8 +5,8 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "items")
 data class ItemEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0L,  // local Room PK
-    val remoteId: String? = null,                        // Firestore doc id
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val remoteId: String = "",               // <— NEW: Firestore doc id
     val title: String,
     val notes: String = "",
     val createdByUid: String = "",

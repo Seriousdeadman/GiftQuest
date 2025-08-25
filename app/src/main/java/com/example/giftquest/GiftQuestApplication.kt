@@ -21,5 +21,6 @@ class GiftQuestApplication : Application() {
             .fallbackToDestructiveMigration()
             // DO NOT add any .addMigrations(...) while iterating
             .build()
+        com.google.firebase.firestore.FirebaseFirestore.setLoggingEnabled(true)
     }
 }
