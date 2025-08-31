@@ -19,6 +19,8 @@ object Routes {
     const val SIGN_UP = "sign_up"
     const val HOME = "home"
     const val ADD_ITEM = "add_item"
+    const val EDIT_ITEM = "edit_item"
+    const val EDIT_ITEM_ROUTE = "edit_item/{itemId}"
     const val GUESS_CHAT = "guess_chat"
     const val GUESS_CHAT_ROUTE = "guess_chat/{itemId}"
 }
@@ -63,6 +65,7 @@ fun GiftQuestApp() {
                     HomeScreen(
                         navController = nav,
                         onAddItem = { nav.navigate(Routes.ADD_ITEM) },
+                        onEditItem = { itemId -> nav.navigate("edit_item/$itemId") },
                         onOpenGuessChat = { itemId -> nav.navigate("guess_chat/$itemId") }
                     )
                 }
@@ -71,6 +74,18 @@ fun GiftQuestApp() {
                     AddItemScreen(
                         onSave = { title ->
                             nav.previousBackStackEntry?.savedStateHandle?.set("newItem", title)
+                            nav.popBackStack()
+                        },
+                        onBack = { nav.popBackStack() }
+                    )
+                }
+
+                composable(Routes.EDIT_ITEM_ROUTE) { backStackEntry ->
+                    val itemId = backStackEntry.arguments?.getString("itemId")?.toLongOrNull() ?: -1L
+                    AddItemScreen(
+                        itemId = itemId,
+                        onSave = { title ->
+                            nav.previousBackStackEntry?.savedStateHandle?.set("editedItem", title)
                             nav.popBackStack()
                         },
                         onBack = { nav.popBackStack() }

@@ -27,4 +27,7 @@ interface ItemDao {
 
     @Query("SELECT * FROM items WHERE id IN (:ids)")
     suspend fun getByIds(ids: List<Long>): List<ItemEntity>
+
+    @Query("SELECT * FROM items WHERE id = :id")
+    suspend fun getById(id: Long): ItemEntity?
 }

@@ -36,29 +36,91 @@ class CoupleRepository {
             .await()
     }
 
-    // Ensure couples/{id} exists; used for the pre-link “personal bucket” (id == uid)
+    // Ensure user document exists
+    suspend fun ensureUserDoc(uid: String) {
+        val ref = db.collection("users").document(uid)
+        val snap = ref.get().await()
+        if (!snap.exists()) {
+            ref.set(mapOf(
+                "uid" to uid,
+                "createdAt" to com.google.firebase.Timestamp.now()
+            ), SetOptions.merge()).await()
+        }
+    }
+
+    // Ensure couples/{id} exists; used for the pre-link "personal bucket" (id == uid)
     suspend fun ensureCoupleDoc(coupleId: String, uid: String) {
         val ref = db.collection("couples").document(coupleId)
         val snap = ref.get().await()
         if (!snap.exists()) {
-            ref.set(mapOf("members" to listOf(uid)), SetOptions.merge()).await()
+            ref.set(mapOf(
+                "members" to listOf(uid),
+                "createdAt" to com.google.firebase.Timestamp.now(),
+                "createdBy" to uid
+            ), SetOptions.merge()).await()
         }
     }
 
-    // When I receive an invite at invites/{myUid}, accept it, set users/{myUid}.coupleId, and delete invite
+    // When I receive an invite, accept it, set users/{myUid}.coupleId, and delete invite
     fun listenForInvites(myUid: String, onLinked: (String) -> Unit): ListenerRegistration {
-        val ref = db.collection("invites").document(myUid)
-        return ref.addSnapshotListener { snap, _ ->
-            val data = snap?.data ?: return@addSnapshotListener
-            val coupleId = data["coupleId"] as? String ?: return@addSnapshotListener
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    db.collection("users").document(myUid)
-                        .set(mapOf("coupleId" to coupleId), SetOptions.merge())
-                        .await()
-                    ref.delete().await()
-                    onLinked(coupleId)
-                } catch (_: Exception) { /* ignore */ }
+        // Listen to all invites where I'm the recipient (toUid)
+        val ref = db.collection("invites")
+        return ref.whereEqualTo("toUid", myUid).addSnapshotListener { snaps, _ ->
+            if (snaps == null || snaps.isEmpty) return@addSnapshotListener
+            
+            // Process each invite for this user
+            for (doc in snaps.documents) {
+                val data = doc.data ?: continue
+                val coupleId = data["coupleId"] as? String ?: continue
+                val fromUid = data["fromUid"] as? String ?: continue
+                
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        // Ensure my user document exists
+                        ensureUserDoc(myUid)
+                        
+                        // Validate the couple document exists and I'm a member
+                        val coupleDoc = db.collection("couples").document(coupleId).get().await()
+                        if (!coupleDoc.exists()) {
+                            doc.reference.delete().await() // Clean up invalid invite
+                            return@launch
+                        }
+                        
+                        val members = (coupleDoc.get("members") as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+                        if (myUid !in members) {
+                            doc.reference.delete().await() // Clean up invalid invite
+                            return@launch
+                        }
+
+                        // Check if I'm already linked
+                        val myDoc = db.collection("users").document(myUid).get().await()
+                        val myCoupleId = myDoc.getString("coupleId")
+                        if (myCoupleId != null) {
+                            doc.reference.delete().await() // Already linked, clean up invite
+                            return@launch
+                        }
+
+                        // Accept the invite
+                        db.collection("users").document(myUid)
+                            .set(mapOf(
+                                "coupleId" to coupleId,
+                                "linkedAt" to com.google.firebase.Timestamp.now()
+                            ), SetOptions.merge())
+                            .await()
+                        
+                        // Delete the invite
+                        doc.reference.delete().await()
+                        
+                        onLinked(coupleId)
+                    } catch (e: Exception) {
+                        // On error, try to clean up the invite
+                        try {
+                            doc.reference.delete().await()
+                        } catch (_: Exception) {
+                            // Ignore cleanup errors
+                        }
+                    }
+                }
             }
         }
     }
@@ -66,24 +128,65 @@ class CoupleRepository {
     // Your existing link method (from earlier message) should still create couples doc + invite
 
     suspend fun unlinkMe(currentUid: String) {
+        println("DEBUG: unlinkMe called for user: $currentUid")
         val meRef = db.collection("users").document(currentUid)
         val coupleId = meRef.get().await().getString("coupleId") ?: return
+        println("DEBUG: Found coupleId: $coupleId")
+        
         val coupleRef = db.collection("couples").document(coupleId)
 
-        db.runTransaction { txn ->
-            val c = txn.get(coupleRef)
-            if (c.exists()) {
-                val members = (c.get("members") as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
-                val newMembers = members.filterNot { it == currentUid }
-                if (newMembers.isEmpty()) {
-                    txn.delete(coupleRef)
-                } else {
-                    txn.update(coupleRef, mapOf("members" to newMembers))
+        try {
+            println("DEBUG: Starting transaction to unlink")
+            db.runTransaction { txn ->
+                val c = txn.get(coupleRef)
+                if (c.exists()) {
+                    val members = (c.get("members") as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
+                    println("DEBUG: Current members: $members")
+                    val newMembers = members.filterNot { it == currentUid }
+                    println("DEBUG: New members after removal: $newMembers")
+                    
+                    if (newMembers.isEmpty()) {
+                        // No members left, delete the couple document
+                        println("DEBUG: No members left, deleting couple document")
+                        txn.delete(coupleRef)
+                    } else {
+                        // Update members list - the other user will be notified via the couple document listener
+                        println("DEBUG: Updating members list to: $newMembers")
+                        txn.update(coupleRef, mapOf("members" to newMembers))
+                    }
                 }
+                
+                // Remove my coupleId
+                println("DEBUG: Removing coupleId from user document")
+                txn.update(meRef, mapOf("coupleId" to com.google.firebase.firestore.FieldValue.delete()))
+                null
+            }.await()
+            println("DEBUG: Transaction completed successfully")
+            
+            // Clean up any pending invites for me (both as sender and recipient)
+            try {
+                println("DEBUG: Cleaning up invites")
+                // Delete invites where I'm the recipient
+                val myInvites = db.collection("invites").whereEqualTo("toUid", currentUid).get().await()
+                for (doc in myInvites.documents) {
+                    doc.reference.delete().await()
+                }
+                
+                // Delete invites where I'm the sender
+                val sentInvites = db.collection("invites").whereEqualTo("fromUid", currentUid).get().await()
+                for (doc in sentInvites.documents) {
+                    doc.reference.delete().await()
+                }
+                println("DEBUG: Invite cleanup completed")
+            } catch (_: Exception) {
+                // Ignore if invites don't exist
+                println("DEBUG: No invites to clean up")
             }
-            txn.update(meRef, mapOf("coupleId" to com.google.firebase.firestore.FieldValue.delete()))
-            null
-        }.await()
+            
+        } catch (e: Exception) {
+            println("DEBUG: Transaction failed with error: ${e.message}")
+            throw IllegalStateException("Failed to unlink: ${e.message}")
+        }
     }
 
     // Optional migration of old personal lists into the new shared couple
@@ -102,23 +205,75 @@ class CoupleRepository {
     }
 
     suspend fun linkAndInvite(myUid: String, partnerUid: String) {
+        // Validate inputs
+        if (myUid.isBlank() || partnerUid.isBlank()) {
+            throw IllegalArgumentException("UIDs cannot be blank")
+        }
+        if (myUid == partnerUid) {
+            throw IllegalArgumentException("Cannot link with yourself")
+        }
+
         val coupleId = deterministicCoupleId(myUid, partnerUid)
 
-        // Ensure couple doc exists
-        db.collection("couples").document(coupleId)
-            .set(mapOf("members" to listOf(myUid, partnerUid)), SetOptions.merge())
-            .await()
+        try {
+            // Ensure my user document exists
+            ensureUserDoc(myUid)
+            
+            // Check if I'm already linked
+            val myDoc = db.collection("users").document(myUid).get().await()
+            val myCoupleId = myDoc.getString("coupleId")
+            if (myCoupleId != null) {
+                throw IllegalStateException("You are already linked with a partner")
+            }
 
-        // Update *my* user profile
-        db.collection("users").document(myUid)
-            .set(mapOf("coupleId" to coupleId), SetOptions.merge())
-            .await()
+            // Create couple document with both members
+            db.collection("couples").document(coupleId)
+                .set(mapOf(
+                    "members" to listOf(myUid, partnerUid),
+                    "createdAt" to com.google.firebase.Timestamp.now(),
+                    "createdBy" to myUid
+                ), SetOptions.merge())
+                .await()
 
-        // Create an invite for partner (they’ll pick it up via listenForInvites)
-        db.collection("invites").document(partnerUid)
-            .set(mapOf("coupleId" to coupleId), SetOptions.merge())
-            .await()
+            // Update my user profile
+            db.collection("users").document(myUid)
+                .set(mapOf(
+                    "coupleId" to coupleId,
+                    "linkedAt" to com.google.firebase.Timestamp.now()
+                ), SetOptions.merge())
+                .await()
+
+            // Create an invite for partner - using the structure expected by security rules
+            val inviteId = "${myUid}_${partnerUid}_${System.currentTimeMillis()}"
+            db.collection("invites").document(inviteId)
+                .set(mapOf(
+                    "fromUid" to myUid,
+                    "toUid" to partnerUid,
+                    "coupleId" to coupleId,
+                    "invitedAt" to com.google.firebase.Timestamp.now()
+                ), SetOptions.merge())
+                .await()
+
+        } catch (e: Exception) {
+            // Clean up on failure
+            try {
+                db.collection("couples").document(coupleId).delete().await()
+                db.collection("users").document(myUid).update("coupleId", com.google.firebase.firestore.FieldValue.delete()).await()
+                // Clean up any invites we created
+                val inviteId = "${myUid}_${partnerUid}_${System.currentTimeMillis()}"
+                db.collection("invites").document(inviteId).delete().await()
+            } catch (_: Exception) {
+                // Ignore cleanup errors
+            }
+            throw e
+        }
     }
 
-
+    fun observeMembers(coupleId: String, onChange: (List<String>) -> Unit): ListenerRegistration {
+        return db.collection("couples").document(coupleId)
+            .addSnapshotListener { snap, _ ->
+                val members = (snap?.get("members") as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+                onChange(members)
+            }
+    }
 }

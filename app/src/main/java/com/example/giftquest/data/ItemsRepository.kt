@@ -79,6 +79,18 @@ class ItemsRepository(private val dao: ItemDao) {
         col.add(data).await()
     }
 
+    suspend fun updateItem(itemId: Long, title: String, notes: String, coupleId: String) {
+        val item = dao.getById(itemId) ?: return
+        val col = fs.collection("couples").document(coupleId).collection("items")
+        
+        val data = mapOf(
+            "title" to title,
+            "notes" to notes
+        )
+
+        col.document(item.remoteId).update(data).await()
+    }
+
 
     suspend fun reorder(idsInOrder: List<Long>, coupleId: String) {
         val locals = dao.getByIds(idsInOrder)
