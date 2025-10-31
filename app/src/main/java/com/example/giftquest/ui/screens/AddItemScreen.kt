@@ -28,7 +28,7 @@ fun AddItemScreen(
     LaunchedEffect(itemId) {
         if (itemId != -1L) {
             val allItems = vm.myItems.value
-            val itemToEdit = allItems.find { it.id == itemId }
+            val itemToEdit = allItems.find { it.id == itemId.toString() }
             if (itemToEdit != null) {
                 title = itemToEdit.title
                 hints = itemToEdit.notes

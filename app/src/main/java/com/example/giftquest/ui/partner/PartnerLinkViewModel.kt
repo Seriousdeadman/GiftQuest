@@ -25,6 +25,10 @@ class PartnerLinkViewModel(
 
     fun loadShareCode() {
         val uid = auth.currentUser?.uid ?: return
+        if (uid.isNullOrBlank()) {
+            _state.value = _state.value.copy(error = "Please sign in first")
+            return
+        }
         _state.value = _state.value.copy(loading = true, error = null)
         viewModelScope.launch {
             try {
@@ -37,7 +41,12 @@ class PartnerLinkViewModel(
     }
 
     fun linkWith(code: String, onLinked: (String) -> Unit) {
-        val uid = auth.currentUser?.uid ?: return
+        val uid = auth.currentUser?.uid
+        if (uid.isNullOrBlank()) {
+            _state.value = _state.value.copy(error = "Please sign in first")
+            return
+        }
+
         _state.value = _state.value.copy(loading = true, error = null)
         viewModelScope.launch {
             try {

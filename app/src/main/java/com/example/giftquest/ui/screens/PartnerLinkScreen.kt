@@ -1,4 +1,4 @@
-package com.giftquest.ui.screens
+package com.example.giftquest.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*

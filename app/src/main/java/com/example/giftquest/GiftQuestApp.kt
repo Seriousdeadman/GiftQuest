@@ -10,6 +10,7 @@ import com.example.giftquest.ui.screens.AddItemScreen
 import com.example.giftquest.ui.screens.GuessChatScreen
 import com.example.giftquest.ui.screens.HomeScreen
 import com.example.giftquest.ui.screens.LoginScreen
+import com.example.giftquest.ui.screens.ProfileScreen
 import com.example.giftquest.ui.screens.SignUpScreen
 import com.example.giftquest.ui.theme.GiftQuestTheme
 import com.google.firebase.auth.FirebaseAuth
@@ -21,6 +22,7 @@ object Routes {
     const val ADD_ITEM = "add_item"
     const val EDIT_ITEM = "edit_item"
     const val EDIT_ITEM_ROUTE = "edit_item/{itemId}"
+    const val PROFILE = "profile"
     const val GUESS_CHAT = "guess_chat"
     const val GUESS_CHAT_ROUTE = "guess_chat/{itemId}"
 }
@@ -66,7 +68,8 @@ fun GiftQuestApp() {
                         navController = nav,
                         onAddItem = { nav.navigate(Routes.ADD_ITEM) },
                         onEditItem = { itemId -> nav.navigate("edit_item/$itemId") },
-                        onOpenGuessChat = { itemId -> nav.navigate("guess_chat/$itemId") }
+                        onOpenGuessChat = { itemId -> nav.navigate("guess_chat/$itemId") },
+                        onOpenProfile = { nav.navigate(Routes.PROFILE) }
                     )
                 }
 
@@ -88,6 +91,12 @@ fun GiftQuestApp() {
                             nav.previousBackStackEntry?.savedStateHandle?.set("editedItem", title)
                             nav.popBackStack()
                         },
+                        onBack = { nav.popBackStack() }
+                    )
+                }
+
+                composable(Routes.PROFILE) {
+                    ProfileScreen(
                         onBack = { nav.popBackStack() }
                     )
                 }

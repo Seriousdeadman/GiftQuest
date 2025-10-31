@@ -82,7 +82,12 @@ class HerItemsViewModel(
     }
 
     fun linkWith(partnerCode: String) {
-        val uid = auth.currentUser?.uid ?: return
+        val uid = auth.currentUser?.uid
+        if (uid.isNullOrBlank()) {
+            _state.update { it.copy(error = "Please sign in first") }
+            return
+        }
+
         viewModelScope.launch {
             try {
                 _state.update { it.copy(loading = true, error = null) }

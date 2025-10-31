@@ -3,6 +3,7 @@ package com.example.giftquest.data
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -10,6 +11,7 @@ import kotlinx.coroutines.tasks.await
 
 class CoupleRepository {
     private val db = FirebaseFirestore.getInstance()
+    private val storage = FirebaseStorage.getInstance()
 
     fun deterministicCoupleId(a: String, b: String): String {
         val (x, y) = if (a < b) a to b else b to a
@@ -24,6 +26,17 @@ class CoupleRepository {
         }
     }
 
+    /**
+     * Uploads a user profile photo to Firebase Storage under users/{uid}/profile.jpg
+     * and returns the public download URL.
+     */
+    suspend fun uploadUserPhoto(uid: String, fileUri: android.net.Uri): String {
+        val path = "users/$uid/profile_${System.currentTimeMillis()}.jpg"
+        val ref = storage.reference.child(path)
+        ref.putFile(fileUri).await()
+        return ref.downloadUrl.await().toString()
+    }
+
     suspend fun isMemberOf(coupleId: String, uid: String): Boolean {
         val snap = db.collection("couples").document(coupleId).get().await()
         val members = (snap.get("members") as? List<*>)?.mapNotNull { it as? String } ?: emptyList()
@@ -36,6 +49,23 @@ class CoupleRepository {
             .await()
     }
 
+    suspend fun updateUserProfile(uid: String, nickname: String?, photoUrl: String?) {
+        val updates = mutableMapOf<String, Any>()
+        if (nickname != null) updates["nickname"] = nickname
+        if (photoUrl != null) updates["photoUrl"] = photoUrl
+        
+        if (updates.isNotEmpty()) {
+            db.collection("users").document(uid)
+                .update(updates)
+                .await()
+        }
+    }
+
+    suspend fun getUserProfile(uid: String): Map<String, Any>? {
+        val doc = db.collection("users").document(uid).get().await()
+        return doc.data
+    }
+
     // Ensure user document exists
     suspend fun ensureUserDoc(uid: String) {
         val ref = db.collection("users").document(uid)
@@ -43,6 +73,8 @@ class CoupleRepository {
         if (!snap.exists()) {
             ref.set(mapOf(
                 "uid" to uid,
+                "nickname" to null,
+                "photoUrl" to null,
                 "createdAt" to com.google.firebase.Timestamp.now()
             ), SetOptions.merge()).await()
         }

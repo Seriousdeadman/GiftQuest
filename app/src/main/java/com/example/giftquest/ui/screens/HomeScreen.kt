@@ -8,40 +8,45 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.*
 import androidx.compose.material3.DrawerValue
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import coil.compose.AsyncImage
 import com.example.giftquest.Routes
-import com.example.giftquest.data.local.ItemEntity
+import com.example.giftquest.data.model.Item
 import com.example.giftquest.ui.home.HomeViewModel
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.launch
-import org.burnoutcrew.reorderable.*
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     navController: NavController,
     onAddItem: () -> Unit,
-    onEditItem: (Long) -> Unit,
-    onOpenGuessChat: (Long) -> Unit
+    onEditItem: (Long) -> Unit,          // kept for now (Room-era API) – not used here
+    onOpenGuessChat: (Long) -> Unit,     // kept for now (Room-era API) – not used here
+    onOpenProfile: () -> Unit
 ) {
     val app = LocalContext.current.applicationContext as Application
     val vm: HomeViewModel = viewModel(factory = HomeViewModel.factory(app))
 
-    val myItems: List<ItemEntity> by vm.myItems.collectAsState()
-    val herItems: List<ItemEntity> by vm.partnerItems.collectAsState()
+    val myItems: List<Item> by vm.myItems.collectAsState()
+    val herItems: List<Item> by vm.partnerItems.collectAsState()
 
     val coupleIdProfile by vm.coupleIdProfile.collectAsState()
+    val userProfile by vm.userProfile.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val uiMessage by vm.message.collectAsState()
 
@@ -63,7 +68,7 @@ fun HomeScreen(
     }
     LaunchedEffect(editedItem) {
         if (editedItem != null) {
-            // Item was edited, no need to do anything special since it's already updated
+            // already updated via Firestore; nothing to do here
             saved.remove<String>("editedItem")
         }
     }
@@ -71,47 +76,65 @@ fun HomeScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    // Reorder only MY list
-    var localItems by remember { mutableStateOf(myItems) }
-    var isDragging by remember { mutableStateOf(false) }
-    LaunchedEffect(myItems, isDragging) { if (!isDragging) localItems = myItems }
-
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
 
-    val reorderState = rememberReorderableLazyListState(
-        onMove = { from, to ->
-            if (!isDragging) isDragging = true
-            localItems = localItems.toMutableList().apply {
-                add(to.index, removeAt(from.index))
-            }
-        },
-        onDragEnd = { _, _ ->
-            vm.reorder(localItems.map { it.id })
-            isDragging = false
-        }
-    )
-
     val authUser = FirebaseAuth.getInstance().currentUser
-    val nickname = authUser?.displayName ?: "You"
+    val nickname = userProfile?.get("nickname") as? String ?: authUser?.displayName ?: "You"
+    val photoUrl = userProfile?.get("photoUrl") as? String ?: ""
+    val uid = authUser?.uid ?: "unknown"
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                    Row(Modifier.fillMaxWidth()) {
-                        Icon(
-                            imageVector = Icons.Default.AccountCircle,
-                            contentDescription = "Account",
-                            modifier = Modifier.size(56.dp)
-                        )
+                    // Profile Section
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                scope.launch {
+                                    drawerState.close()
+                                    onOpenProfile()
+                                }
+                            },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (photoUrl.isNotEmpty()) {
+                            AsyncImage(
+                                model = photoUrl,
+                                contentDescription = "Profile Photo",
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.AccountCircle,
+                                contentDescription = "Profile",
+                                modifier = Modifier.size(56.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
                         Spacer(Modifier.width(12.dp))
+
                         Column {
-                            Text(nickname, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            val uid = authUser?.uid ?: "unknown"
+                            Text(
+                                nickname,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
                             Text(uid.take(10) + "…", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "Tap to edit profile",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
+
                     Spacer(Modifier.height(16.dp))
                     Divider()
                     Spacer(Modifier.height(16.dp))
@@ -156,7 +179,7 @@ fun HomeScreen(
             },
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             floatingActionButton = {
-                if (pagerState.currentPage == 0 && !isDragging) {
+                if (pagerState.currentPage == 0) {
                     FloatingActionButton(onClick = onAddItem) { Text("+") }
                 }
             }
@@ -177,12 +200,11 @@ fun HomeScreen(
 
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                     when (page) {
-                        0 -> MyItemsPageReorderable(
-                            items = localItems,
-                            isDragging = isDragging,
-                            reorderState = reorderState,
-                            onEditItem = onEditItem,
-                            onOpenGuessChat = onOpenGuessChat // TODO: later change to edit/details screen if you want
+                        0 -> MyItemsPage(
+                            items = myItems,
+                            // TODO: once nav uses String IDs, wire these back
+                            onEdit = { /* onEditItem(0L) */ },
+                            onGuess = { /* onOpenGuessChat(0L) */ }
                         )
                         1 -> {
                             if (coupleIdProfile == null) {
@@ -190,10 +212,9 @@ fun HomeScreen(
                                     onLinkPartner = { code -> vm.linkWithPartner(code) }
                                 )
                             } else {
-                                // SAME card UI as "My Items", but no drag handle, and tap opens AI chat
                                 PartnerItemsPage(
                                     items = herItems,
-                                    onOpenGuessChat = onOpenGuessChat
+                                    onGuess = { /* onOpenGuessChat(0L) */ }
                                 )
                             }
                         }
@@ -205,12 +226,10 @@ fun HomeScreen(
 }
 
 @Composable
-private fun MyItemsPageReorderable(
-    items: List<ItemEntity>,
-    isDragging: Boolean,
-    reorderState: ReorderableLazyListState,
-    onEditItem: (Long) -> Unit,
-    onOpenGuessChat: (Long) -> Unit
+private fun MyItemsPage(
+    items: List<Item>,
+    onEdit: (String) -> Unit,
+    onGuess: (String) -> Unit
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         if (items.isEmpty()) {
@@ -224,31 +243,17 @@ private fun MyItemsPageReorderable(
         } else {
             Text("My Items", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().reorderable(reorderState),
-                state = reorderState.listState
-            ) {
+            LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(items, key = { _, item -> item.id }) { _, item ->
-                    ReorderableItem(reorderState, key = item.id) { _ ->
-                        ElevatedCard(
-                            onClick = { if (!isDragging) onEditItem(item.id) },
-                            modifier = Modifier.padding(bottom = 12.dp)
-                        ) {
-                            Row(
-                                Modifier.padding(16.dp).fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(item.title, style = MaterialTheme.typography.titleMedium)
-                                    Spacer(Modifier.height(4.dp))
-                                    Text("Tap to edit…", style = MaterialTheme.typography.bodyMedium)
-                                }
-                                Icon(
-                                    imageVector = Icons.Filled.DragHandle,
-                                    contentDescription = "Drag",
-                                    modifier = Modifier.detectReorder(reorderState)
-                                )
-                            }
+                    ElevatedCard(
+                        // TODO wire when nav uses String IDs: onClick = { onEdit(item.id) }
+                        onClick = { /* no-op for now */ },
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(item.title, style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Tap to edit…", style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -257,15 +262,10 @@ private fun MyItemsPageReorderable(
     }
 }
 
-/**
- * SAME visual layout as MyItems cards, but:
- * - no drag behaviors/handle
- * - tap opens guess chat for the partner's item
- */
 @Composable
 private fun PartnerItemsPage(
-    items: List<ItemEntity>,
-    onOpenGuessChat: (Long) -> Unit
+    items: List<Item>,
+    onGuess: (String) -> Unit
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         if (items.isEmpty()) {
@@ -282,19 +282,14 @@ private fun PartnerItemsPage(
             LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(items, key = { _, item -> item.id }) { _, item ->
                     ElevatedCard(
-                        onClick = { onOpenGuessChat(item.id) }, // open guess chat
+                        // TODO wire when nav uses String IDs: onClick = { onGuess(item.id) }
+                        onClick = { /* no-op for now */ },
                         modifier = Modifier.padding(bottom = 12.dp)
                     ) {
-                        Row(
-                            Modifier.padding(16.dp).fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(item.title, style = MaterialTheme.typography.titleMedium)
-                                Spacer(Modifier.height(4.dp))
-                                Text("Tap to guess…", style = MaterialTheme.typography.bodyMedium)
-                            }
-                            // No drag handle here - same visual layout but no drag functionality
+                        Column(Modifier.padding(16.dp)) {
+                            Text(item.title, style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Tap to guess…", style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -355,7 +350,7 @@ private fun HerItemsLinkPage(
             modifier = Modifier.fillMaxWidth().height(48.dp),
             enabled = partnerCodeInput.trim().isNotEmpty()
         ) { Text("Link Partner") }
-        
+
         Spacer(Modifier.height(16.dp))
         Text(
             "Once linked, you'll be able to see each other's mystery items and guess what they want!",
