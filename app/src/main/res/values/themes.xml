@@ -8,4 +8,7 @@
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
         <item name="postSplashScreenTheme">@style/Theme.GiftQuest</item>
     </style>
+    <style name="zxing_CaptureTheme" parent="Theme.AppCompat.Light.NoActionBar">
+    <item name="android:windowBackground">@android:color/black</item>
+    </style>
 </resources>

@@ -6,12 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.giftquest.ui.screens.AddItemScreen
-import com.example.giftquest.ui.screens.GuessChatScreen
-import com.example.giftquest.ui.screens.HomeScreen
-import com.example.giftquest.ui.screens.LoginScreen
-import com.example.giftquest.ui.screens.ProfileScreen
-import com.example.giftquest.ui.screens.SignUpScreen
+import com.example.giftquest.ui.screens.*
 import com.example.giftquest.ui.theme.GiftQuestTheme
 import com.google.firebase.auth.FirebaseAuth
 
@@ -25,14 +20,14 @@ object Routes {
     const val PROFILE = "profile"
     const val GUESS_CHAT = "guess_chat"
     const val GUESS_CHAT_ROUTE = "guess_chat/{itemId}"
+    const val HER_ITEMS = "herItems"
 }
-
 
 @Composable
 fun GiftQuestApp() {
     GiftQuestTheme {
         val nav = rememberNavController()
-        val isLoggedIn = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser != null
+        val isLoggedIn = FirebaseAuth.getInstance().currentUser != null
         val start = if (isLoggedIn) Routes.HOME else Routes.LOGIN
 
         Surface(color = MaterialTheme.colorScheme.background) {
@@ -45,8 +40,7 @@ fun GiftQuestApp() {
                                 popUpTo(Routes.LOGIN) { inclusive = true }
                             }
                         },
-                        onSkip = { nav.navigate(Routes.HOME) },
-                        onCreateAccount = { nav.navigate(Routes.SIGN_UP) },   // NEW
+                        onCreateAccount = { nav.navigate(Routes.SIGN_UP) },
                         onForgotPassword = { /* TODO: nav to reset screen later */ }
                     )
                 }
@@ -62,7 +56,6 @@ fun GiftQuestApp() {
                     )
                 }
 
-                // ...
                 composable(Routes.HOME) {
                     HomeScreen(
                         navController = nav,
@@ -75,6 +68,7 @@ fun GiftQuestApp() {
 
                 composable(Routes.ADD_ITEM) {
                     AddItemScreen(
+                        itemId = null,  // Creating new item
                         onSave = { title ->
                             nav.previousBackStackEntry?.savedStateHandle?.set("newItem", title)
                             nav.popBackStack()
@@ -83,14 +77,22 @@ fun GiftQuestApp() {
                     )
                 }
 
+                // ✅ EDIT ITEM ROUTE - Now properly enabled!
                 composable(Routes.EDIT_ITEM_ROUTE) { backStackEntry ->
-                    val itemId = backStackEntry.arguments?.getString("itemId")?.toLongOrNull() ?: -1L
+                    val itemId = backStackEntry.arguments?.getString("itemId")
                     AddItemScreen(
-                        itemId = itemId,
+                        itemId = itemId,  // Pass itemId to edit mode
                         onSave = { title ->
+                            // Not used in edit mode, but keeping for consistency
                             nav.previousBackStackEntry?.savedStateHandle?.set("editedItem", title)
                             nav.popBackStack()
                         },
+                        onBack = { nav.popBackStack() }
+                    )
+                }
+
+                composable(Routes.HER_ITEMS) {
+                    HerItemsScreen(
                         onBack = { nav.popBackStack() }
                     )
                 }
@@ -101,11 +103,10 @@ fun GiftQuestApp() {
                     )
                 }
 
-// Accept itemId param
+                // ✅ GUESS CHAT ROUTE - Already properly set up
                 composable(Routes.GUESS_CHAT_ROUTE) { backStackEntry ->
-                    val itemId =
-                        backStackEntry.arguments?.getString("itemId")?.toLongOrNull() ?: -1L
-                    com.example.giftquest.ui.screens.GuessChatScreen(
+                    val itemId = backStackEntry.arguments?.getString("itemId")
+                    GuessChatScreen(
                         itemId = itemId,
                         onBack = { nav.popBackStack() }
                     )

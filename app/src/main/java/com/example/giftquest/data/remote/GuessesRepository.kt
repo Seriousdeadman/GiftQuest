@@ -1,3 +1,4 @@
+/*
 package com.example.giftquest.data.remote
 
 import com.example.giftquest.data.model.Guess
@@ -17,7 +18,8 @@ class GuessesRepository(
             .collection("items").document(itemId)
             .collection("guesses")
 
-    suspend fun addGuess(coupleId: String, itemId: String, byUid: String, text: String, score: Int?) {
+    */
+/*suspend fun addGuess(coupleId: String, itemId: String, byUid: String, text: String, score: Int?) {
         val doc = guessesCollection(coupleId, itemId).document()
         val data = mapOf(
             "text" to text,
@@ -26,7 +28,8 @@ class GuessesRepository(
             "closenessScore" to (score ?: 0)
         )
         doc.set(data).await()
-    }
+    }*//*
+
 
     fun guessesFlow(coupleId: String, itemId: String): Flow<List<Guess>> = callbackFlow {
         val reg = guessesCollection(coupleId, itemId)
@@ -44,3 +47,4 @@ class GuessesRepository(
         awaitClose { reg.remove() }
     }
 }
+*/

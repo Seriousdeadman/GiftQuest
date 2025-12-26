@@ -21,7 +21,7 @@ class GuessViewModel(app: Application) : AndroidViewModel(app) {
     val guessesFlow: StateFlow<List<Guess>> =
         _guesses.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun addGuess(itemId: Long, text: String, uid: String) {
+    fun addGuess(itemId: String?, text: String, uid: String) {
         if (uid == "anon") return
         viewModelScope.launch {
             // TODO: connect this with Firestore (e.g. add to /guesses collection)
@@ -31,7 +31,7 @@ class GuessViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     data class Guess(
-        val itemId: Long,
+        val itemId: String?,
         val guessedByUid: String,
         val guessText: String
     )

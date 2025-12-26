@@ -1,6 +1,7 @@
 package com.example.giftquest.ui.screens
 
 import android.app.Application
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -11,12 +12,14 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.*
-import androidx.compose.material3.DrawerValue
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -28,25 +31,27 @@ import com.example.giftquest.Routes
 import com.example.giftquest.data.model.Item
 import com.example.giftquest.ui.home.HomeViewModel
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import org.burnoutcrew.reorderable.*
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     navController: NavController,
     onAddItem: () -> Unit,
-    onEditItem: (Long) -> Unit,          // kept for now (Room-era API) – not used here
-    onOpenGuessChat: (Long) -> Unit,     // kept for now (Room-era API) – not used here
+    onEditItem: (String) -> Unit,
+    onOpenGuessChat: (String) -> Unit,
     onOpenProfile: () -> Unit
 ) {
     val app = LocalContext.current.applicationContext as Application
     val vm: HomeViewModel = viewModel(factory = HomeViewModel.factory(app))
 
     val myItems: List<Item> by vm.myItems.collectAsState()
-    val herItems: List<Item> by vm.partnerItems.collectAsState()
+    val partnerItems: List<Item> by vm.partnerItems.collectAsState()
+    val partnerUid: String? by vm.partnerUid.collectAsState()
 
-    val coupleIdProfile by vm.coupleIdProfile.collectAsState()
-    val userProfile by vm.userProfile.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val uiMessage by vm.message.collectAsState()
 
@@ -60,35 +65,67 @@ fun HomeScreen(
     val saved = navController.currentBackStackEntry?.savedStateHandle
     val returned = saved?.get<String>("newItem")
     val editedItem = saved?.get<String>("editedItem")
+
+    var hasProcessed by remember { mutableStateOf(false) }
+
     LaunchedEffect(returned) {
-        if (returned != null) {
-            vm.addItem(title = returned)
+        if (returned != null && !hasProcessed) {
+            android.util.Log.d("GiftQuest", "Processing newItem: $returned")
+            hasProcessed = true
             saved.remove<String>("newItem")
+            vm.addItem(title = returned)
         }
     }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            hasProcessed = false
+        }
+    }
+
     LaunchedEffect(editedItem) {
         if (editedItem != null) {
-            // already updated via Firestore; nothing to do here
             saved.remove<String>("editedItem")
         }
     }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
 
     val authUser = FirebaseAuth.getInstance().currentUser
-    val nickname = userProfile?.get("nickname") as? String ?: authUser?.displayName ?: "You"
-    val photoUrl = userProfile?.get("photoUrl") as? String ?: ""
     val uid = authUser?.uid ?: "unknown"
+    val isLinked = partnerUid != null
+
+    // Load user profile data from Firestore
+    var userNickname by remember { mutableStateOf(authUser?.displayName ?: "You") }
+    var userPhotoUrl by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(uid) {
+        if (uid != "unknown") {
+            try {
+                val userDoc = FirebaseFirestore.getInstance()
+                    .collection("users")
+                    .document(uid)
+                    .get()
+                    .await()
+
+                userNickname = userDoc.getString("nickname") ?: authUser?.displayName ?: "You"
+                userPhotoUrl = userDoc.getString("photoUrl")
+
+                android.util.Log.d("GiftQuest", "Loaded user profile - nickname: $userNickname, photoUrl: $userPhotoUrl")
+            } catch (e: Exception) {
+                android.util.Log.e("GiftQuest", "Failed to load user profile", e)
+            }
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                    // Profile Section
+                    // Profile Section with Photo
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -100,14 +137,18 @@ fun HomeScreen(
                             },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (photoUrl.isNotEmpty()) {
+                        // Profile Photo
+                        if (!userPhotoUrl.isNullOrEmpty()) {
                             AsyncImage(
-                                model = photoUrl,
+                                model = userPhotoUrl,
                                 contentDescription = "Profile Photo",
                                 modifier = Modifier
                                     .size(56.dp)
                                     .clip(CircleShape),
-                                contentScale = ContentScale.Crop
+                                contentScale = ContentScale.Crop,
+                                onError = {
+                                    android.util.Log.e("GiftQuest", "Failed to load profile photo: $userPhotoUrl")
+                                }
                             )
                         } else {
                             Icon(
@@ -122,11 +163,11 @@ fun HomeScreen(
 
                         Column {
                             Text(
-                                nickname,
+                                userNickname,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
-                            Text(uid.take(10) + "…", style = MaterialTheme.typography.bodySmall)
+                            Text(uid.take(12) + "…", style = MaterialTheme.typography.bodySmall)
                             Text(
                                 "Tap to edit profile",
                                 style = MaterialTheme.typography.bodySmall,
@@ -136,8 +177,26 @@ fun HomeScreen(
                     }
 
                     Spacer(Modifier.height(16.dp))
-                    Divider()
+                    HorizontalDivider()
                     Spacer(Modifier.height(16.dp))
+
+                    // Link Status
+                    if (isLinked) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        ) {
+                            Text(
+                                "✓ Linked with Partner",
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
 
                     Button(
                         onClick = {
@@ -147,8 +206,10 @@ fun HomeScreen(
                             }
                         },
                         modifier = Modifier.fillMaxWidth().height(48.dp),
-                        enabled = coupleIdProfile != null
-                    ) { Text("Un-link partner") }
+                        enabled = isLinked
+                    ) {
+                        Text(if (isLinked) "Unlink Partner" else "No Partner Linked")
+                    }
 
                     Spacer(Modifier.height(8.dp))
 
@@ -172,17 +233,29 @@ fun HomeScreen(
                     title = { Text("GiftQuest") },
                     actions = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.AccountCircle, contentDescription = "Account menu")
+                            // Show user photo in top bar if available
+                            if (!userPhotoUrl.isNullOrEmpty()) {
+                                AsyncImage(
+                                    model = userPhotoUrl,
+                                    contentDescription = "Profile",
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Icon(Icons.Default.AccountCircle, contentDescription = "Account menu")
+                            }
                         }
                     }
                 )
             },
-            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             floatingActionButton = {
-                if (pagerState.currentPage == 0) {
-                    FloatingActionButton(onClick = onAddItem) { Text("+") }
+                FloatingActionButton(onClick = onAddItem) {
+                    Text("+", style = MaterialTheme.typography.headlineMedium)
                 }
-            }
+            },
+            snackbarHost = { SnackbarHost(snackbarHostState) }
         ) { padding ->
             Column(Modifier.padding(padding).fillMaxSize()) {
                 TabRow(selectedTabIndex = pagerState.currentPage) {
@@ -194,7 +267,7 @@ fun HomeScreen(
                     Tab(
                         selected = pagerState.currentPage == 1,
                         onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
-                        text = { Text("Her Items") }
+                        text = { Text("Partner's Items") }
                     )
                 }
 
@@ -202,19 +275,35 @@ fun HomeScreen(
                     when (page) {
                         0 -> MyItemsPage(
                             items = myItems,
-                            // TODO: once nav uses String IDs, wire these back
-                            onEdit = { /* onEditItem(0L) */ },
-                            onGuess = { /* onOpenGuessChat(0L) */ }
+                            onEdit = { itemId ->
+                                try {
+                                    android.util.Log.d("GiftQuest", "Editing item: $itemId")
+                                    onEditItem(itemId)
+                                } catch (e: Exception) {
+                                    android.util.Log.e("GiftQuest", "Error navigating to edit", e)
+                                }
+                            },
+                            onDelete = { itemId ->
+                                android.util.Log.d("GiftQuest", "Deleting item: $itemId")
+                                vm.deleteItem(itemId)
+                            },
+                            onReorder = { newOrder ->
+                                android.util.Log.d("GiftQuest", "Reordering items")
+                                vm.reorder(newOrder)
+                            },
+                            onGuess = { itemId -> onOpenGuessChat(itemId) }
                         )
                         1 -> {
-                            if (coupleIdProfile == null) {
-                                HerItemsLinkPage(
-                                    onLinkPartner = { code -> vm.linkWithPartner(code) }
+                            if (!isLinked) {
+                                NotLinkedPage(
+                                    onNavigateToLinkScreen = {
+                                        navController.navigate(Routes.HER_ITEMS)
+                                    }
                                 )
                             } else {
                                 PartnerItemsPage(
-                                    items = herItems,
-                                    onGuess = { /* onOpenGuessChat(0L) */ }
+                                    items = partnerItems,
+                                    onGuess = { itemId -> onOpenGuessChat(itemId) }
                                 )
                             }
                         }
@@ -225,35 +314,167 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun MyItemsPage(
     items: List<Item>,
     onEdit: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onReorder: (List<String>) -> Unit,
     onGuess: (String) -> Unit
 ) {
+    var itemToDelete by remember { mutableStateOf<Item?>(null) }
+    var itemsList by remember(items) { mutableStateOf(items) }
+
+    // Delete confirmation dialog
+    if (itemToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { itemToDelete = null },
+            title = { Text("Delete Item?") },
+            text = { Text("Are you sure you want to delete '${itemToDelete?.title}'?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        itemToDelete?.let { onDelete(it.remoteId) }
+                        itemToDelete = null
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { itemToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         if (items.isEmpty()) {
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp)) {
                     Text("Start your first wishlist ✨", style = MaterialTheme.typography.titleLarge)
                     Spacer(Modifier.height(8.dp))
-                    Text("Tap the + button to add your first mystery item.")
+                    Text("Tap the + button to add your first gift item.")
                 }
             }
         } else {
-            Text("My Items", style = MaterialTheme.typography.titleLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("My Items", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Long press ⋮⋮ to reorder",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(Modifier.height(8.dp))
-            LazyColumn(Modifier.fillMaxSize()) {
-                itemsIndexed(items, key = { _, item -> item.id }) { _, item ->
-                    ElevatedCard(
-                        // TODO wire when nav uses String IDs: onClick = { onEdit(item.id) }
-                        onClick = { /* no-op for now */ },
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.titleMedium)
-                            Spacer(Modifier.height(4.dp))
-                            Text("Tap to edit…", style = MaterialTheme.typography.bodyMedium)
+
+            // Reorderable list state
+            val reorderState = rememberReorderableLazyListState(
+                onMove = { from, to ->
+                    itemsList = itemsList.toMutableList().apply {
+                        add(to.index, removeAt(from.index))
+                    }
+                },
+                onDragEnd = { from, to ->
+                    val newOrder = itemsList.map { it.remoteId }
+                    onReorder(newOrder)
+                }
+            )
+
+            LazyColumn(
+                state = reorderState.listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .reorderable(reorderState),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                itemsIndexed(itemsList, key = { _, item -> item.remoteId }) { index, item ->
+                    ReorderableItem(reorderState, key = item.remoteId) { isDragging ->
+                        val elevation by animateDpAsState(if (isDragging) 8.dp else 0.dp)
+
+                        SwipeToDismissBox(
+                            state = rememberSwipeToDismissBoxState(
+                                confirmValueChange = { dismissValue ->
+                                    if (dismissValue == SwipeToDismissBoxValue.EndToStart) {
+                                        itemToDelete = item
+                                        false
+                                    } else {
+                                        false
+                                    }
+                                }
+                            ),
+                            backgroundContent = {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 8.dp),
+                                    contentAlignment = Alignment.CenterEnd
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Delete",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .shadow(elevation)
+                        ) {
+                            ElevatedCard(
+                                onClick = { onEdit(item.remoteId) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Drag handle
+                                    Icon(
+                                        imageVector = Icons.Default.DragHandle,
+                                        contentDescription = "Drag to reorder",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .detectReorderAfterLongPress(reorderState)
+                                    )
+
+                                    Spacer(Modifier.width(12.dp))
+
+                                    // Item content
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            item.title,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        if (item.notes.isNotBlank()) {
+                                            Spacer(Modifier.height(4.dp))
+                                            Text(
+                                                item.notes,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 2
+                                            )
+                                        }
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            "Tap to edit • Swipe to delete • Hold ⋮⋮ to reorder",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -262,6 +483,7 @@ private fun MyItemsPage(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PartnerItemsPage(
     items: List<Item>,
@@ -271,25 +493,44 @@ private fun PartnerItemsPage(
         if (items.isEmpty()) {
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp)) {
-                    Text("No mystery items yet ✨", style = MaterialTheme.typography.titleLarge)
+                    Text("No items yet ✨", style = MaterialTheme.typography.titleLarge)
                     Spacer(Modifier.height(8.dp))
                     Text("Your partner hasn't added any items to their wishlist yet.")
                 }
             }
         } else {
-            Text("Her Items", style = MaterialTheme.typography.titleLarge)
+            Text("Partner's Items", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
-            LazyColumn(Modifier.fillMaxSize()) {
-                itemsIndexed(items, key = { _, item -> item.id }) { _, item ->
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                itemsIndexed(items, key = { _, item -> item.remoteId }) { _, item ->
                     ElevatedCard(
-                        // TODO wire when nav uses String IDs: onClick = { onGuess(item.id) }
-                        onClick = { /* no-op for now */ },
-                        modifier = Modifier.padding(bottom = 12.dp)
+                        onClick = { onGuess(item.remoteId) },
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.titleMedium)
+                        Column(Modifier.padding(16.dp).fillMaxWidth()) {
+                            Text(
+                                item.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (item.notes.isNotBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    item.notes,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2
+                                )
+                            }
                             Spacer(Modifier.height(4.dp))
-                            Text("Tap to guess…", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Tap to chat/guess",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
                 }
@@ -298,64 +539,56 @@ private fun PartnerItemsPage(
     }
 }
 
-/** Link UI when not yet paired */
 @Composable
-private fun HerItemsLinkPage(
-    onLinkPartner: (String) -> Unit
+private fun NotLinkedPage(
+    onNavigateToLinkScreen: () -> Unit
 ) {
-    val myUid = FirebaseAuth.getInstance().currentUser?.uid ?: "unknown"
-    var partnerCodeInput by remember { mutableStateOf("") }
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Link with your partner to share wishlists", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(12.dp))
-        Text("Share your invite code with your partner:")
-        Spacer(Modifier.height(8.dp))
-        ElevatedCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(myUid))
-                    android.widget.Toast
-                        .makeText(ctx, "Copied invite code", android.widget.Toast.LENGTH_SHORT)
-                        .show()
-                }
-        ) {
-            Column(Modifier.padding(24.dp)) {
-                Text(myUid, style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(6.dp))
-                Text("Tap to copy", style = MaterialTheme.typography.labelMedium)
-            }
-        }
-        Spacer(Modifier.height(24.dp))
-        Divider()
-        Spacer(Modifier.height(16.dp))
-        Text("Or enter your partner's code to link:")
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = partnerCodeInput,
-            onValueChange = { partnerCodeInput = it },
-            placeholder = { Text("Enter partner's invite code") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true
-        )
-        Spacer(Modifier.height(12.dp))
-        Button(
-            onClick = {
-                val code = partnerCodeInput.trim()
-                if (code.isNotEmpty()) onLinkPartner(code)
-            },
-            modifier = Modifier.fillMaxWidth().height(48.dp),
-            enabled = partnerCodeInput.trim().isNotEmpty()
-        ) { Text("Link Partner") }
-
-        Spacer(Modifier.height(16.dp))
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
         Text(
-            "Once linked, you'll be able to see each other's mystery items and guess what they want!",
-            style = MaterialTheme.typography.bodySmall,
+            "Not Linked with Partner",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            "Link with your partner to see their wishlist and share yours!",
+            style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        Spacer(Modifier.height(32.dp))
+
+        Button(
+            onClick = onNavigateToLinkScreen,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Text("Link with Partner", style = MaterialTheme.typography.titleMedium)
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("How it works:", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(8.dp))
+                Text("1. Get your unique share code", style = MaterialTheme.typography.bodySmall)
+                Text("2. Share it with your partner", style = MaterialTheme.typography.bodySmall)
+                Text("3. Enter their code too", style = MaterialTheme.typography.bodySmall)
+                Text("4. You're linked! 🎁", style = MaterialTheme.typography.bodySmall)
+            }
+        }
     }
 }

@@ -1,25 +1,21 @@
 package com.example.giftquest.ui.home
 
 import android.app.Application
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.giftquest.data.CoupleRepository
+import com.example.giftquest.data.ItemsRepository
 import com.example.giftquest.data.model.Item
-import com.example.giftquest.data.remote.CloudItemsRepository
+import com.example.giftquest.data.remote.PairingRepository
 import com.google.firebase.auth.FirebaseAuth
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
-    // Firestore-only repositories
-    private val repo = CloudItemsRepository()
-    private val coupleRepo = CoupleRepository()
+    private val itemsRepo = ItemsRepository()
+    private val pairingRepo = PairingRepository()
 
     private val uid: String = FirebaseAuth.getInstance().currentUser?.uid ?: "anon"
 
@@ -27,161 +23,123 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     val message: StateFlow<String?> = _message
     fun consumeMessage() { _message.value = null }
 
-    private val _coupleIdProfile = MutableStateFlow<String?>(null)
-    val coupleIdProfile: StateFlow<String?> = _coupleIdProfile
-
-    private val _userProfile = MutableStateFlow<Map<String, Any>?>(null)
-    val userProfile: StateFlow<Map<String, Any>?> = _userProfile
-
-    // Firestore item stream (no Room)
-    private val allItems: StateFlow<List<Item>> =
-        coupleIdProfile
-            .map { it ?: uid }
-            .flatMapLatest { activeId -> repo.itemsFlow(activeId) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
+    // Partner's UID (null if not linked)
     private val _partnerUid = MutableStateFlow<String?>(null)
     val partnerUid: StateFlow<String?> = _partnerUid
 
-    val myItems: StateFlow<List<Item>> =
-        allItems.map { list -> list.filter { it.createdByUid == uid } }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    // My items (always from users/{myUid}/items/)
+    val myItems: StateFlow<List<Item>> = itemsRepo.itemsFlow(uid)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val partnerItems: StateFlow<List<Item>> =
-        combine(allItems, partnerUid) { list, pUid ->
-            if (pUid == null) emptyList() else list.filter { it.createdByUid == pUid }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    // Partner's items (from users/{partnerUid}/items/ if linked)
+    val partnerItems: StateFlow<List<Item>> = _partnerUid
+        .flatMapLatest { pUid ->
+            if (pUid == null) flowOf(emptyList())
+            else itemsRepo.itemsFlow(pUid)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private var coupleListener: com.google.firebase.firestore.ListenerRegistration? = null
-    private var inviteListener: com.google.firebase.firestore.ListenerRegistration? = null
-    private var membersListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var linkListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     init {
         if (uid != "anon") {
-            viewModelScope.launch {
-                try { coupleRepo.ensureUserDoc(uid) }
-                catch (e: Exception) { _message.value = "Profile init error: ${e.message}" }
-            }
-
-            // Watch user's coupleId field
-            coupleListener = coupleRepo.observeMyCoupleId(uid) { newCoupleId ->
+            // Listen for link status changes
+            linkListener = pairingRepo.observeMyLinkStatus(uid) { linkedWithUid ->
                 viewModelScope.launch {
-                    _coupleIdProfile.value = newCoupleId
-                    handleCoupleChange(newCoupleId)
-                }
-            }
-
-            // Load user profile
-            viewModelScope.launch {
-                try { _userProfile.value = coupleRepo.getUserProfile(uid) }
-                catch (_: Exception) { }
-            }
-
-            // Also listen for invites
-            inviteListener = coupleRepo.listenForInvites(uid) { linkedId ->
-                viewModelScope.launch {
-                    _coupleIdProfile.value = linkedId
-                    _message.value = "Paired successfully!"
-                }
-            }
-        }
-    }
-
-    private suspend fun handleCoupleChange(newCoupleId: String?) {
-        try {
-            if (newCoupleId != null) {
-                val amMember = coupleRepo.isMemberOf(newCoupleId, uid)
-                if (!amMember) {
-                    coupleRepo.clearMyCouple(uid)
-                    _coupleIdProfile.value = null
-                } else {
-                    coupleRepo.ensureCoupleDoc(newCoupleId, uid)
-                    membersListener?.remove()
-                    _partnerUid.value = null
-                    membersListener = coupleRepo.observeMembers(newCoupleId) { members ->
-                        _partnerUid.value = members.firstOrNull { it != uid }
+                    _partnerUid.value = linkedWithUid
+                    if (linkedWithUid != null) {
+                        _message.value = "Linked with partner!"
+                    } else {
+                        _message.value = "Unlinked from partner"
                     }
                 }
             }
-        } catch (e: Exception) {
-            _message.value = "Couple sync error: ${e.message}"
         }
     }
 
     override fun onCleared() {
         super.onCleared()
-        coupleListener?.remove()
-        inviteListener?.remove()
-        membersListener?.remove()
+        linkListener?.remove()
     }
 
     fun addItem(title: String) {
-        val activeId = coupleIdProfile.value ?: uid
+        android.util.Log.d("GiftQuest", "=== ADD ITEM START ===")
+        android.util.Log.d("GiftQuest", "Title: $title")
+        android.util.Log.d("GiftQuest", "UID: $uid")
+
+        if (uid == "anon") {
+            android.util.Log.e("GiftQuest", "ERROR: Not signed in!")
+            _message.value = "Please sign in first"
+            return
+        }
+
         viewModelScope.launch {
             try {
-                coupleRepo.ensureCoupleDoc(activeId, uid)
-                repo.addItem(
+                android.util.Log.d("GiftQuest", "Calling itemsRepo.addItem...")
+
+                itemsRepo.addItem(
                     title = title,
-                    notes = "",
-                    createdByUid = uid,
-                    coupleId = activeId
+                    uid = uid,
+                    coupleId = uid  // Not used but required by signature
                 )
 
+                android.util.Log.d("GiftQuest", "✅ Item added successfully!")
+                _message.value = "Item added!"
+
             } catch (e: Exception) {
+                android.util.Log.e("GiftQuest", "❌ Add failed: ${e.message}", e)
                 _message.value = "Add failed: ${e.message}"
+            }
+        }
+
+
+
+    }
+
+    fun updateItem(remoteId: String, title: String, notes: String) {
+        viewModelScope.launch {
+            try {
+                itemsRepo.updateItem(remoteId, title, notes, uid)
+                _message.value = "Item updated!"
+            } catch (e: Exception) {
+                _message.value = "Update failed: ${e.message}"
             }
         }
     }
 
-    // Temporarily disabled until Firestore update is implemented
-    fun updateItem(itemId: Long, title: String, notes: String) {
-        _message.value = "Update not yet implemented for Firestore mode"
-    }
-
-    // Temporarily disabled reorder
-    fun reorder(idsInOrder: List<Long>) {
-        _message.value = "Reorder not yet implemented for Firestore mode"
-    }
-
-    fun linkWithPartner(partnerUid: String) {
-        if (uid == "anon") { _message.value = "Please sign in first"; return }
+    fun deleteItem(remoteId: String) {
         viewModelScope.launch {
             try {
-                coupleRepo.linkAndInvite(uid, partnerUid)
-                _message.value = "Invitation sent!"
+                itemsRepo.deleteItem(remoteId, uid)
+                _message.value = "Item deleted!"
             } catch (e: Exception) {
-                _message.value = "Failed to link: ${e.message}"
+                _message.value = "Delete failed: ${e.message}"
+            }
+        }
+    }
+
+    fun reorder(remoteIdsInOrder: List<String>) {
+        viewModelScope.launch {
+            try {
+                itemsRepo.reorder(remoteIdsInOrder, uid)
+            } catch (e: Exception) {
+                _message.value = "Reorder failed: ${e.message}"
             }
         }
     }
 
     fun unlinkPartner() {
-        if (uid == "anon") { _message.value = "Please sign in first"; return }
+        if (uid == "anon") {
+            _message.value = "Please sign in first"
+            return
+        }
+
         viewModelScope.launch {
             try {
-                coupleRepo.unlinkMe(uid)
-                _message.value = "Unlinked successfully."
+                pairingRepo.unlinkMe(uid)
+                _message.value = "Unlinked successfully"
             } catch (e: Exception) {
                 _message.value = "Unlink failed: ${e.message}"
-            }
-        }
-    }
-
-    fun getUserProfile(): Map<String, Any>? = _userProfile.value
-
-    fun updateProfile(nickname: String?, photoUrl: String?) {
-        viewModelScope.launch {
-            try {
-                val resolvedPhotoUrl = when {
-                    photoUrl.isNullOrBlank() -> null
-                    photoUrl.startsWith("http", true) -> photoUrl
-                    else -> photoUrl
-                }
-                coupleRepo.updateUserProfile(uid, nickname, resolvedPhotoUrl)
-                _userProfile.value = coupleRepo.getUserProfile(uid)
-                _message.value = "Profile updated successfully"
-            } catch (e: Exception) {
-                _message.value = "Profile update failed: ${e.message}"
             }
         }
     }

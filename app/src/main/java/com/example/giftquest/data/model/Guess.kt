@@ -1,3 +1,4 @@
+/*
 package com.example.giftquest.data.model
 
 data class Guess(
@@ -7,3 +8,4 @@ data class Guess(
     val createdAt: com.google.firebase.Timestamp? = null,
     val closenessScore: Int = 0
 )
+*/

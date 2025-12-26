@@ -1,3 +1,4 @@
+/*
 package com.example.giftquest.data
 
 import com.google.firebase.firestore.FirebaseFirestore
@@ -26,10 +27,12 @@ class CoupleRepository {
         }
     }
 
-    /**
+    */
+/**
      * Uploads a user profile photo to Firebase Storage under users/{uid}/profile.jpg
      * and returns the public download URL.
-     */
+     *//*
+
     suspend fun uploadUserPhoto(uid: String, fileUri: android.net.Uri): String {
         val path = "users/$uid/profile_${System.currentTimeMillis()}.jpg"
         val ref = storage.reference.child(path)
@@ -285,6 +288,8 @@ class CoupleRepository {
                     "invitedAt" to com.google.firebase.Timestamp.now()
                 ), SetOptions.merge())
                 .await()
+            migrateOldListsToCouple(myUid, partnerUid, coupleId)
+
 
         } catch (e: Exception) {
             // Clean up on failure
@@ -309,3 +314,4 @@ class CoupleRepository {
             }
     }
 }
+*/

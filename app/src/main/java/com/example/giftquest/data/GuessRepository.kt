@@ -1,29 +1,62 @@
 package com.example.giftquest.data
 
-import com.example.giftquest.data.local.GuessDao
-import com.example.giftquest.data.local.GuessEntity
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.Query
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.tasks.await
 import kotlin.math.min
 
-class GuessRepository(private val dao: GuessDao) {
+data class Guess(
+    val remoteId: String,
+    val itemId: String,  // remote item ID
+    val guessedByUid: String,
+    val guessText: String
+)
 
-    fun guesses(itemId: Long): Flow<List<GuessEntity>> =
-        dao.guessesForItemFlow(itemId)
+class GuessRepository() {  // No constructor parameters
 
-    // now takes uid and uses GuessEntity fields that actually exist
-    suspend fun sendUserGuess(itemId: Long, text: String, uid: String) {
-        dao.insert(
-            GuessEntity(
-                itemId = itemId,
-                guessedByUid = uid,
-                guessText = text
-            )
-        )
+    private val fs = FirebaseFirestore.getInstance()
+    private var listener: ListenerRegistration? = null
+
+    fun guesses(itemId: String): Flow<List<Guess>> = callbackFlow {
+        val listener = fs.collection("guesses")
+            .whereEqualTo("itemId", itemId)
+            .orderBy("createdAtMillis", Query.Direction.ASCENDING)
+            .addSnapshotListener { snaps, error ->
+                if (error != null) {
+                    close(error)
+                    return@addSnapshotListener
+                }
+
+                val guesses = snaps?.documents?.map { d ->
+                    Guess(
+                        remoteId = d.id,
+                        itemId = d.getString("itemId") ?: "",
+                        guessedByUid = d.getString("guessedByUid") ?: "",
+                        guessText = d.getString("guessText") ?: ""
+                    )
+                } ?: emptyList()
+
+                trySend(guesses)
+            }
+
+        awaitClose { listener.remove() }
     }
 
-    // If you want a simple AI reply without adding new DB columns,
-    // store it as a normal GuessEntity with guessedByUid="ai"
-    suspend fun sendAiReply(itemId: Long, itemTitle: String, guessText: String) {
+    suspend fun sendUserGuess(itemId: String, text: String, uid: String) {
+        val now = System.currentTimeMillis()
+        fs.collection("guesses").add(mapOf(
+            "itemId" to itemId,
+            "guessedByUid" to uid,
+            "guessText" to text,
+            "createdAtMillis" to now
+        )).await()
+    }
+
+    suspend fun sendAiReply(itemId: String, itemTitle: String, guessText: String) {
         val overlap = commonChars(itemTitle.lowercase(), guessText.lowercase())
         val score = (overlap.toFloat() / maxOf(1, itemTitle.length)).coerceIn(0f, 1f)
         val reply = when {
@@ -31,13 +64,13 @@ class GuessRepository(private val dao: GuessDao) {
             score > 0.25f -> "Warm 🙂 Getting there!"
             else -> "Cold ❄️"
         }
-        dao.insert(
-            GuessEntity(
-                itemId = itemId,
-                guessedByUid = "ai",
-                guessText = reply
-            )
-        )
+        val now = System.currentTimeMillis()
+        fs.collection("guesses").add(mapOf(
+            "itemId" to itemId,
+            "guessedByUid" to "ai",
+            "guessText" to reply,
+            "createdAtMillis" to now
+        )).await()
     }
 
     private fun commonChars(a: String, b: String): Int {

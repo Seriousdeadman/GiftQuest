@@ -2,88 +2,86 @@ package com.example.giftquest.ui.heritems
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.giftquest.data.ItemsRepository
 import com.example.giftquest.data.model.Item
-import com.example.giftquest.data.remote.CloudItemsRepository
 import com.example.giftquest.data.remote.PairingRepository
-import com.example.giftquest.data.user.UserDoc
-import com.example.giftquest.data.user.UserDocRepository
 import com.google.firebase.auth.FirebaseAuth
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 data class HerItemsUiState(
     val loading: Boolean = false,
     val error: String? = null,
-    val me: UserDoc? = null,
     val myShareCode: String = "",
-    val coupleId: String? = null,
-    val partnerItems: List<Item> = emptyList()
+    val partnerUid: String? = null,
+    val partnerItems: List<Item> = emptyList(),
+    val isLinked: Boolean = false
 )
 
 class HerItemsViewModel(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
-    private val userRepo: UserDocRepository = UserDocRepository(),
-    private val pairRepo: PairingRepository = PairingRepository(),
-    private val cloudItems: CloudItemsRepository = CloudItemsRepository()
+    private val pairingRepo: PairingRepository = PairingRepository(),
+    private val itemsRepo: ItemsRepository = ItemsRepository()
 ) : ViewModel() {
+
+    private val uid: String = auth.currentUser?.uid ?: "anon"
 
     private val _state = MutableStateFlow(HerItemsUiState(loading = true))
     val state: StateFlow<HerItemsUiState> = _state.asStateFlow()
 
-    private var itemsJobActiveCid: String? = null
+    private var linkListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     init {
-        // Observe my user doc (to get coupleId & myShareCode)
-        viewModelScope.launch {
-            userRepo.meFlow().collect { me ->
-                val uid = auth.currentUser?.uid
-                val cid = me?.coupleId
-                _state.update {
-                    it.copy(
-                        me = me,
-                        coupleId = cid,
-                        loading = false,
-                        error = null,
-                        myShareCode = me?.myShareCode ?: it.myShareCode
-                    )
-                }
-                if (uid != null && cid != null) {
-                    startPartnerItems(uid, cid)
+        if (uid != "anon") {
+            // Load my share code
+            loadShareCode()
+
+            // Listen for link status changes
+            linkListener = pairingRepo.observeMyLinkStatus(uid) { partnerUid ->
+                viewModelScope.launch {
+                    _state.update { it.copy(
+                        partnerUid = partnerUid,
+                        isLinked = partnerUid != null,
+                        loading = false
+                    )}
+
+                    // Start listening to partner's items if linked
+                    if (partnerUid != null) {
+                        observePartnerItems(partnerUid)
+                    } else {
+                        _state.update { it.copy(partnerItems = emptyList()) }
+                    }
                 }
             }
         }
     }
 
-    private fun startPartnerItems(myUid: String, coupleId: String) {
-        if (itemsJobActiveCid == coupleId) return
-        itemsJobActiveCid = coupleId
-        viewModelScope.launch {
-            cloudItems.itemsFlow(coupleId).collect { list ->
-                val partnerOnly = list.filter { it.createdByUid != myUid }
-                _state.update { it.copy(partnerItems = partnerOnly) }
-            }
-        }
+    override fun onCleared() {
+        super.onCleared()
+        linkListener?.remove()
     }
 
-    fun ensureShareCode() {
-        val uid = auth.currentUser?.uid ?: return
+    private fun loadShareCode() {
         viewModelScope.launch {
             try {
-                _state.update { it.copy(loading = true, error = null) }
-                val code = pairRepo.ensureMyShareCode(uid)
-                _state.update { it.copy(loading = false, myShareCode = code) }
+                val code = pairingRepo.ensureMyShareCode(uid)
+                _state.update { it.copy(myShareCode = code) }
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false, error = e.message ?: "Error") }
+                _state.update { it.copy(error = "Failed to load share code") }
+            }
+        }
+    }
+
+    private fun observePartnerItems(partnerUid: String) {
+        viewModelScope.launch {
+            itemsRepo.itemsFlow(partnerUid).collect { items ->
+                _state.update { it.copy(partnerItems = items) }
             }
         }
     }
 
     fun linkWith(partnerCode: String) {
-        val uid = auth.currentUser?.uid
-        if (uid.isNullOrBlank()) {
+        if (uid == "anon") {
             _state.update { it.copy(error = "Please sign in first") }
             return
         }
@@ -91,12 +89,47 @@ class HerItemsViewModel(
         viewModelScope.launch {
             try {
                 _state.update { it.copy(loading = true, error = null) }
-                val cid = pairRepo.linkWithPartnerCode(uid, partnerCode.trim())
-                _state.update { it.copy(loading = false, coupleId = cid) }
-                // Streaming starts automatically via init observer
+                val partnerUid = pairingRepo.linkWithPartnerCode(uid, partnerCode.trim())
+                _state.update { it.copy(
+                    loading = false,
+                    partnerUid = partnerUid,
+                    isLinked = true
+                )}
             } catch (e: Exception) {
-                _state.update { it.copy(loading = false, error = e.message ?: "Link failed") }
+                _state.update { it.copy(
+                    loading = false,
+                    error = e.message ?: "Link failed"
+                )}
             }
         }
+    }
+
+    fun unlink() {
+        if (uid == "anon") {
+            _state.update { it.copy(error = "Please sign in first") }
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                _state.update { it.copy(loading = true, error = null) }
+                pairingRepo.unlinkMe(uid)
+                _state.update { it.copy(
+                    loading = false,
+                    partnerUid = null,
+                    isLinked = false,
+                    partnerItems = emptyList()
+                )}
+            } catch (e: Exception) {
+                _state.update { it.copy(
+                    loading = false,
+                    error = "Unlink failed: ${e.message}"
+                )}
+            }
+        }
+    }
+
+    fun clearError() {
+        _state.update { it.copy(error = null) }
     }
 }
