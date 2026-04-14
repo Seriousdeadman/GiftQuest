@@ -1,18 +1,27 @@
 package com.example.giftquest.ui.profile
 
+import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.giftquest.BuildConfig.CLOUDINARY_CLOUD
+import com.example.giftquest.BuildConfig.CLOUDINARY_PRESET
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.storage.FirebaseStorage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+private const val TAG = "GiftQuest"
 
 data class ProfileUiState(
     val loading: Boolean = true,
@@ -24,205 +33,133 @@ data class ProfileUiState(
 
 class ProfileViewModel(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
-    private val db: FirebaseFirestore = FirebaseFirestore.getInstance(),
-    private val storage: FirebaseStorage = FirebaseStorage.getInstance()
+    private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ProfileUiState())
     val state: StateFlow<ProfileUiState> = _state.asStateFlow()
 
-    init {
-        loadProfile()
-    }
+    init { loadProfile() }
 
     private fun loadProfile() {
-        val uid = auth.currentUser?.uid
-        if (uid == null) {
+        val uid = auth.currentUser?.uid ?: run {
             _state.value = ProfileUiState(loading = false, error = "Not signed in")
             return
         }
-
         _state.value = ProfileUiState(loading = true, uid = uid)
-
         viewModelScope.launch {
             try {
-                android.util.Log.d("GiftQuest", "Loading profile for UID: $uid")
-                val userDoc = db.collection("users").document(uid).get().await()
-
-                val nickname = userDoc.getString("nickname") ?: ""
-                val photoUrl = userDoc.getString("photoUrl") ?: ""
-
-                android.util.Log.d("GiftQuest", "Profile loaded - nickname: $nickname, photoUrl: $photoUrl")
-
+                val doc = db.collection("users").document(uid).get().await()
                 _state.value = ProfileUiState(
                     loading = false,
-                    nickname = nickname,
-                    photoUrl = photoUrl,
+                    nickname = doc.getString("nickname") ?: "",
+                    photoUrl = doc.getString("photoUrl") ?: "",
                     uid = uid
                 )
             } catch (e: Exception) {
-                android.util.Log.e("GiftQuest", "Failed to load profile", e)
-                _state.value = ProfileUiState(
-                    loading = false,
-                    error = "Failed to load profile: ${e.message}",
-                    uid = uid
-                )
+                Log.e(TAG, "Failed to load profile", e)
+                _state.value = ProfileUiState(loading = false, error = "Failed to load profile", uid = uid)
             }
         }
     }
 
-    fun updateNickname(newNickname: String) {
-        _state.value = _state.value.copy(nickname = newNickname)
-    }
-
-    fun updatePhotoUrl(newPhotoUrl: String) {
-        _state.value = _state.value.copy(photoUrl = newPhotoUrl)
-    }
-
-    /**
-     * Upload photo and automatically save to Firestore
-     * Fixed version with proper Storage reference handling
-     */
-    suspend fun uploadPhotoAndSave(uri: Uri): Boolean {
-        val uid = auth.currentUser?.uid
-        if (uid == null) {
-            _state.value = _state.value.copy(error = "Not signed in")
-            return false
-        }
-
-        _state.value = _state.value.copy(loading = true, error = null)
-
-        return try {
-            android.util.Log.d("GiftQuest", "Starting photo upload for UID: $uid")
-            android.util.Log.d("GiftQuest", "Photo URI: $uri")
-
-            // Create Storage reference with proper path
-            val timestamp = System.currentTimeMillis()
-            val filename = "profile_$timestamp.jpg"
-            val storagePath = "users/$uid/$filename"
-
-            android.util.Log.d("GiftQuest", "Storage path: $storagePath")
-
-            // Get storage reference
-            val storageRef = storage.reference.child(storagePath)
-
-            // Upload file using putFile (better for content URIs)
-            android.util.Log.d("GiftQuest", "Starting upload...")
-            val uploadTask = storageRef.putFile(uri).await()
-
-            android.util.Log.d("GiftQuest", "Upload complete, getting download URL...")
-
-            // Get download URL
-            val downloadUrl = storageRef.downloadUrl.await().toString()
-
-            android.util.Log.d("GiftQuest", "Photo uploaded successfully: $downloadUrl")
-
-            // Update local state
-            _state.value = _state.value.copy(photoUrl = downloadUrl)
-
-            // Save to Firestore immediately
-            val updates = hashMapOf<String, Any>(
-                "photoUrl" to downloadUrl,
-                "photoUpdatedAt" to System.currentTimeMillis()
-            )
-
-            db.collection("users")
-                .document(uid)
-                .set(updates, SetOptions.merge())
-                .await()
-
-            android.util.Log.d("GiftQuest", "Photo URL saved to Firestore")
-
-            // Also update Firebase Auth profile
-            try {
-                auth.currentUser?.updateProfile(
-                    userProfileChangeRequest {
-                        photoUri = Uri.parse(downloadUrl)
-                    }
-                )?.await()
-
-                android.util.Log.d("GiftQuest", "Auth profile updated")
-            } catch (e: Exception) {
-                // Auth update is not critical, just log
-                android.util.Log.w("GiftQuest", "Auth profile update failed (non-critical)", e)
-            }
-
-            _state.value = _state.value.copy(loading = false)
-            true
-
-        } catch (e: Exception) {
-            android.util.Log.e("GiftQuest", "Photo upload failed", e)
-            android.util.Log.e("GiftQuest", "Error details: ${e.message}")
-            e.printStackTrace()
-
-            _state.value = _state.value.copy(
-                loading = false,
-                error = "Photo upload failed: ${e.message}"
-            )
-            false
-        }
-    }
-
-    fun saveProfile() {
-        val uid = auth.currentUser?.uid
-        if (uid == null) {
-            _state.value = _state.value.copy(error = "Not signed in")
-            return
-        }
-
-        _state.value = _state.value.copy(loading = true, error = null)
-
-        viewModelScope.launch {
-            try {
-                android.util.Log.d("GiftQuest", "Saving profile for UID: $uid")
-
-                val updates = mutableMapOf<String, Any>()
-
-                if (_state.value.nickname.isNotBlank()) {
-                    updates["nickname"] = _state.value.nickname
-                }
-
-                if (_state.value.photoUrl.isNotBlank()) {
-                    updates["photoUrl"] = _state.value.photoUrl
-                }
-
-                if (updates.isNotEmpty()) {
-                    db.collection("users")
-                        .document(uid)
-                        .set(updates, SetOptions.merge())
-                        .await()
-
-                    android.util.Log.d("GiftQuest", "Profile saved: $updates")
-                }
-
-                // Update Firebase Auth displayName
-                if (_state.value.nickname.isNotBlank()) {
-                    try {
-                        auth.currentUser?.updateProfile(
-                            userProfileChangeRequest {
-                                displayName = _state.value.nickname
-                            }
-                        )?.await()
-
-                        android.util.Log.d("GiftQuest", "Auth displayName updated")
-                    } catch (e: Exception) {
-                        android.util.Log.w("GiftQuest", "Auth displayName update failed (non-critical)", e)
-                    }
-                }
-
-                _state.value = _state.value.copy(loading = false)
-
-            } catch (e: Exception) {
-                android.util.Log.e("GiftQuest", "Save profile failed", e)
-                _state.value = _state.value.copy(
-                    loading = false,
-                    error = "Save failed: ${e.message}"
-                )
-            }
-        }
+    fun updateNickname(value: String) {
+        _state.value = _state.value.copy(nickname = value)
     }
 
     fun clearError() {
         _state.value = _state.value.copy(error = null)
+    }
+
+    // ── Photo Upload (Cloudinary) ──────────────────────────────────────────────
+
+    suspend fun uploadPhotoAndSave(context: Context, uri: Uri): Boolean {
+        val uid = auth.currentUser?.uid ?: return false
+        _state.value = _state.value.copy(loading = true, error = null)
+        return try {
+            val url = uploadToCloudinary(context, uri)
+            if (url == null) {
+                _state.value = _state.value.copy(loading = false, error = "Photo upload failed")
+                return false
+            }
+            db.collection("users").document(uid)
+                .set(mapOf("photoUrl" to url), SetOptions.merge()).await()
+            _state.value = _state.value.copy(loading = false, photoUrl = url)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Photo upload failed", e)
+            _state.value = _state.value.copy(loading = false, error = "Photo upload failed: ${e.message}")
+            false
+        }
+    }
+
+    private suspend fun uploadToCloudinary(context: Context, uri: Uri): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val bytes = context.contentResolver.openInputStream(uri)?.readBytes() ?: return@withContext null
+                val boundary = "boundary_${System.currentTimeMillis()}"
+                val conn = (URL("https://api.cloudinary.com/v1_1/$CLOUDINARY_CLOUD/image/upload")
+                    .openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+                    doOutput = true; connectTimeout = 30_000; readTimeout = 30_000
+                }
+                conn.outputStream.use { out ->
+                    out.write("--$boundary\r\nContent-Disposition: form-data; name=\"upload_preset\"\r\n\r\n$CLOUDINARY_PRESET\r\n".toByteArray())
+                    out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"pfp.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".toByteArray())
+                    out.write(bytes)
+                    out.write("\r\n--$boundary--\r\n".toByteArray())
+                }
+                if (conn.responseCode != 200) return@withContext null
+                JSONObject(conn.inputStream.bufferedReader().readText()).getString("secure_url")
+            } catch (e: Exception) {
+                Log.e(TAG, "Cloudinary upload failed: ${e.message}")
+                null
+            }
+        }
+
+    // ── Save Nickname ──────────────────────────────────────────────────────────
+
+    fun saveProfile(onDone: () -> Unit) {
+        val uid = auth.currentUser?.uid ?: return
+        _state.value = _state.value.copy(loading = true, error = null)
+        viewModelScope.launch {
+            try {
+                db.collection("users").document(uid)
+                    .set(mapOf("nickname" to _state.value.nickname.trim()), SetOptions.merge())
+                    .await()
+                _state.value = _state.value.copy(loading = false)
+                onDone()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(loading = false, error = "Save failed: ${e.message}")
+            }
+        }
+    }
+
+    // ── Delete Account ─────────────────────────────────────────────────────────
+
+    fun deleteAccount(onDeleted: () -> Unit) {
+        val user = auth.currentUser ?: return
+        val uid = user.uid
+        _state.value = _state.value.copy(loading = true, error = null)
+        viewModelScope.launch {
+            try {
+                // Delete Firestore user doc and subcollections (items, gameResults)
+                // Firestore doesn't auto-delete subcollections, but cleaning the root doc
+                // is enough for now — subcollections can be cleaned by a Cloud Function later
+                db.collection("users").document(uid).delete().await()
+
+                // Delete Firebase Auth account
+                user.delete().await()
+
+                onDeleted()
+            } catch (e: Exception) {
+                Log.e(TAG, "Delete account failed", e)
+                _state.value = _state.value.copy(
+                    loading = false,
+                    error = "Delete failed. You may need to re-login first."
+                )
+            }
+        }
     }
 }

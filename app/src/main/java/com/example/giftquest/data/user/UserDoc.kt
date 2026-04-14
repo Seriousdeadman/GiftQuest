@@ -7,6 +7,6 @@ data class UserDoc(
     val email: String = "",
     val photoUrl: String? = null,
     val dateOfBirth: String = "",
-    val coupleId: String? = null,
+    val linkedWith: String? = null,
     val myShareCode: String? = null
 )

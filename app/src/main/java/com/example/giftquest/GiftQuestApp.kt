@@ -2,12 +2,13 @@ package com.example.giftquest
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.giftquest.ui.screens.*
 import com.example.giftquest.ui.theme.GiftQuestTheme
+import com.example.giftquest.ui.update.UpdateChecker
 import com.google.firebase.auth.FirebaseAuth
 
 object Routes {
@@ -15,11 +16,9 @@ object Routes {
     const val SIGN_UP = "sign_up"
     const val HOME = "home"
     const val ADD_ITEM = "add_item"
-    const val EDIT_ITEM = "edit_item"
     const val EDIT_ITEM_ROUTE = "edit_item/{itemId}"
     const val PROFILE = "profile"
-    const val GUESS_CHAT = "guess_chat"
-    const val GUESS_CHAT_ROUTE = "guess_chat/{itemId}"
+    const val GUESS_CHAT_ROUTE = "guess_chat/{ownerUid}/{itemId}"
     const val HER_ITEMS = "herItems"
 }
 
@@ -31,6 +30,7 @@ fun GiftQuestApp() {
         val start = if (isLoggedIn) Routes.HOME else Routes.LOGIN
 
         Surface(color = MaterialTheme.colorScheme.background) {
+            UpdateChecker(currentVersion = 1)
             NavHost(navController = nav, startDestination = start) {
 
                 composable(Routes.LOGIN) {
@@ -41,7 +41,7 @@ fun GiftQuestApp() {
                             }
                         },
                         onCreateAccount = { nav.navigate(Routes.SIGN_UP) },
-                        onForgotPassword = { /* TODO: nav to reset screen later */ }
+                        onForgotPassword = { }
                     )
                 }
 
@@ -60,54 +60,62 @@ fun GiftQuestApp() {
                     HomeScreen(
                         navController = nav,
                         onAddItem = { nav.navigate(Routes.ADD_ITEM) },
-                        onEditItem = { itemId -> nav.navigate("edit_item/$itemId") },
-                        onOpenGuessChat = { itemId -> nav.navigate("guess_chat/$itemId") },
+                        onEditItem = { itemId: String -> nav.navigate("edit_item/$itemId") },
+                        onOpenGuessChat = { ownerUid: String, itemId: String ->
+                            nav.navigate("guess_chat/$ownerUid/$itemId")
+                        },
                         onOpenProfile = { nav.navigate(Routes.PROFILE) }
                     )
                 }
 
                 composable(Routes.ADD_ITEM) {
                     AddItemScreen(
-                        itemId = null,  // Creating new item
-                        onSave = { title ->
-                            nav.previousBackStackEntry?.savedStateHandle?.set("newItem", title)
-                            nav.popBackStack()
-                        },
+                        itemId = null,
+                        onSave = { nav.popBackStack() },
                         onBack = { nav.popBackStack() }
                     )
                 }
 
-                // ✅ EDIT ITEM ROUTE - Now properly enabled!
                 composable(Routes.EDIT_ITEM_ROUTE) { backStackEntry ->
                     val itemId = backStackEntry.arguments?.getString("itemId")
                     AddItemScreen(
-                        itemId = itemId,  // Pass itemId to edit mode
-                        onSave = { title ->
-                            // Not used in edit mode, but keeping for consistency
-                            nav.previousBackStackEntry?.savedStateHandle?.set("editedItem", title)
-                            nav.popBackStack()
-                        },
+                        itemId = itemId,
+                        onSave = { nav.popBackStack() },
                         onBack = { nav.popBackStack() }
                     )
                 }
 
                 composable(Routes.HER_ITEMS) {
                     HerItemsScreen(
-                        onBack = { nav.popBackStack() }
+                        onBack = { nav.popBackStack() },
+                        onGuess = { itemId: String ->
+                            val currentUid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                            // partnerUid needed here — get it from homeVm if you kept it, or pass through route
+                            nav.navigate("guess_chat/$currentUid/$itemId")
+                        }
                     )
                 }
 
                 composable(Routes.PROFILE) {
                     ProfileScreen(
-                        onBack = { nav.popBackStack() }
+                        onBack = { nav.popBackStack() },
+                        onLoggedOut = {
+                            nav.navigate(Routes.LOGIN) { popUpTo(0) { inclusive = true } }
+                            FirebaseAuth.getInstance().signOut()
+                        },
+                        onAccountDeleted = {
+                            nav.navigate(Routes.LOGIN) { popUpTo(0) { inclusive = true } }
+                        }
                     )
                 }
 
-                // ✅ GUESS CHAT ROUTE - Already properly set up
                 composable(Routes.GUESS_CHAT_ROUTE) { backStackEntry ->
                     val itemId = backStackEntry.arguments?.getString("itemId")
+                    val ownerUid = backStackEntry.arguments?.getString("ownerUid") ?: ""
+                    android.util.Log.d("GiftQuest", "Opening chat — itemId=$itemId, ownerUid=$ownerUid")
                     GuessChatScreen(
                         itemId = itemId,
+                        itemOwnerId = ownerUid,
                         onBack = { nav.popBackStack() }
                     )
                 }

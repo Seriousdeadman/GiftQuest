@@ -1,15 +1,30 @@
+# Built outputs
 *.iml
 .gradle
-/local.properties
+/build
+/captures
+.externalNativeBuild
+.cxx
+
+# Local config — NEVER commit these
+local.properties
+google-services.json
+*.jks
+*.keystore
+
+# IDE
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+.idea/
+
+# OS
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+Thumbs.db
+
+# Kotlin
+*.class
+*.kotlin_module

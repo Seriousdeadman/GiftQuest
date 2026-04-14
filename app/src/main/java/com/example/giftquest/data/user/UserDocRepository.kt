@@ -18,6 +18,8 @@ class UserDocRepository(
             close()
             return@callbackFlow
         }
+
+
         val reg = db.collection("users").document(uid)
             .addSnapshotListener { snap, _ ->
                 val doc = snap?.toObject(UserDoc::class.java)?.copy(uid = uid)

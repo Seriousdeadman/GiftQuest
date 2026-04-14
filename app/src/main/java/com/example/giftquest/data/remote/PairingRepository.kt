@@ -1,131 +1,91 @@
 package com.example.giftquest.data.remote
 
-import com.google.firebase.firestore.FieldValue
+import android.util.Log
+import com.example.giftquest.data.GameResultsRepository
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
-import java.util.UUID
+
+private const val TAG = "GiftQuest"
 
 class PairingRepository(
-    private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
+    private val fs: FirebaseFirestore = FirebaseFirestore.getInstance(),
+    private val gameResultsRepo: GameResultsRepository = GameResultsRepository()
 ) {
 
     /**
-     * Generate and save a unique 8-character share code for the user
-     */
-    suspend fun ensureMyShareCode(uid: String): String {
-        val userRef = db.collection("users").document(uid)
-        val snap = userRef.get().await()
-        val existing = snap.getString("myShareCode")
-
-        if (!existing.isNullOrBlank()) return existing
-
-        // Generate new code
-        val newCode = UUID.randomUUID().toString().take(8).uppercase()
-        userRef.set(mapOf("myShareCode" to newCode), SetOptions.merge()).await()
-        return newCode
-    }
-
-    /**
-     * Instantly link with partner using their share code
-     * NO collection group query - simple search in users/ collection
+     * Link two users together using a share code.
      */
     suspend fun linkWithPartnerCode(myUid: String, partnerCode: String): String {
-        // ✅ Simple query - no collection group, no index needed!
-        val usersQuery = db.collection("users")
-            .whereEqualTo("myShareCode", partnerCode)
+        // Look up partner by share code
+        val codeDoc = fs.collection("shareCodes")
+            .document(partnerCode)
             .get()
             .await()
 
-        require(!usersQuery.isEmpty) { "Invalid code - partner not found" }
+        val partnerUid = codeDoc.getString("uid")
+            ?: throw Exception("Invalid code: $partnerCode")
 
-        val partnerDoc = usersQuery.documents.first()
-        val partnerUid = partnerDoc.id
+        if (partnerUid == myUid) throw Exception("You can't link with yourself!")
 
-        require(myUid != partnerUid) { "Cannot link with yourself" }
+        val batch = fs.batch()
 
-        // Check if either user is already linked
-        val myDoc = db.collection("users").document(myUid).get().await()
-        val myLinkedWith = myDoc.getString("linkedWith")
-
-        val partnerLinkedWith = partnerDoc.getString("linkedWith")
-
-        require(myLinkedWith.isNullOrBlank()) { "You are already linked with someone" }
-        require(partnerLinkedWith.isNullOrBlank()) { "Partner is already linked with someone" }
-
-        // Atomic link: set linkedWith on both users
-        val batch = db.batch()
-
-        batch.set(
-            db.collection("users").document(myUid),
-            mapOf(
-                "linkedWith" to partnerUid,
-                "linkedAt" to FieldValue.serverTimestamp()
-            ),
-            SetOptions.merge()
-        )
-
-        batch.set(
-            db.collection("users").document(partnerUid),
-            mapOf(
-                "linkedWith" to myUid,
-                "linkedAt" to FieldValue.serverTimestamp()
-            ),
-            SetOptions.merge()
-        )
+        // Set linkedWith on both users
+        batch.update(fs.collection("users").document(myUid), "linkedWith", partnerUid)
+        batch.update(fs.collection("users").document(partnerUid), "linkedWith", myUid)
 
         batch.commit().await()
 
-        return partnerUid // Return partner's UID
+        Log.d(TAG, "Linked $myUid with $partnerUid")
+        return partnerUid
     }
 
     /**
-     * Unlink from current partner
-     * Removes linkedWith field from both users
+     * Unlink current user from their partner.
+     * Also deletes all game results both users have with each other.
      */
     suspend fun unlinkMe(myUid: String) {
-        // Get my partner's UID
-        val myDoc = db.collection("users").document(myUid).get().await()
+        val myDoc = fs.collection("users").document(myUid).get().await()
         val partnerUid = myDoc.getString("linkedWith")
 
-        if (partnerUid.isNullOrBlank()) {
-            throw IllegalStateException("You are not linked with anyone")
+        if (partnerUid != null) {
+            // Only delete MY game results — partner's are their own data
+            gameResultsRepo.deleteResultsForPartner(
+                guesserUid = myUid,
+                partnerUid = partnerUid
+            )
+            Log.d(TAG, "Deleted my game results on unlink")
         }
 
-        // Atomic unlink: remove linkedWith from both users
-        val batch = db.batch()
-
-        batch.update(
-            db.collection("users").document(myUid),
-            mapOf("linkedWith" to FieldValue.delete())
-        )
-
-        batch.update(
-            db.collection("users").document(partnerUid),
-            mapOf("linkedWith" to FieldValue.delete())
-        )
-
+        val batch = fs.batch()
+        batch.update(fs.collection("users").document(myUid), "linkedWith", null)
+        if (partnerUid != null) {
+            batch.update(fs.collection("users").document(partnerUid), "linkedWith", null)
+        }
         batch.commit().await()
+
+        Log.d(TAG, "Unlinked $myUid from $partnerUid")
     }
 
-    /**
-     * Listen for changes to my linkedWith status
-     * Triggers callback when I get linked or unlinked
-     */
-    fun observeMyLinkStatus(myUid: String, onChange: (String?) -> Unit): ListenerRegistration {
-        return db.collection("users").document(myUid)
-            .addSnapshotListener { snap, _ ->
-                val linkedWith = snap?.getString("linkedWith")
-                onChange(linkedWith)
-            }
+    suspend fun ensureMyShareCode(myUid: String): String {
+        // Check if user already has a share code
+        val existing = fs.collection("shareCodes")
+            .whereEqualTo("uid", myUid)
+            .limit(1)
+            .get()
+            .await()
+
+        if (!existing.isEmpty) {
+            return existing.documents.first().id
+        }
+
+        // Generate a new share code
+        val code = generateCode()
+        fs.collection("shareCodes").document(code).set(mapOf("uid" to myUid)).await()
+        return code
     }
 
-    /**
-     * Get partner's profile info
-     */
-    suspend fun getPartnerProfile(partnerUid: String): Map<String, Any>? {
-        val snap = db.collection("users").document(partnerUid).get().await()
-        return snap.data
+    private fun generateCode(): String {
+        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        return (1..8).map { chars.random() }.joinToString("")
     }
 }

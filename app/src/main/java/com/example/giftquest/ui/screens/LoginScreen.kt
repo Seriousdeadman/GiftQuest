@@ -1,5 +1,6 @@
 package com.example.giftquest.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -15,9 +16,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.giftquest.ui.components.FacebookSignInButton
+import com.example.giftquest.ui.components.GoogleSignInButton
 import com.example.giftquest.ui.login.LoginViewModel
+import com.example.giftquest.ui.signup.SignUpViewModel
 import com.example.giftquest.utils.DevMode
-
 @Composable
 fun LoginScreen(
     onLoggedIn: () -> Unit,
@@ -28,56 +31,42 @@ fun LoginScreen(
     val context = LocalContext.current
     val state by viewModel.state.collectAsState()
 
+    val googleVm: SignUpViewModel = viewModel()
+    val googleState by googleVm.state.collectAsState()
+
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var autoLoginAttempted by remember { mutableStateOf(false) }
 
-    // 🔧 DEV MODE: Auto-login for whitelisted devices only
+    // Dev mode auto-login
     LaunchedEffect(Unit) {
-        if (DevMode.DEV_MODE_ENABLED && !autoLoginAttempted) {
-            autoLoginAttempted = true
-
-            val deviceConfig = DevMode.getDeviceConfig()
-            if (deviceConfig != null) {
-                android.util.Log.d("DevMode", "Auto-login enabled for this device")
-                viewModel.signIn(
-                    email = deviceConfig.email,
-                    password = deviceConfig.password,
-                    onSuccess = onLoggedIn
-                )
-            } else {
-                android.util.Log.d("DevMode", "Device not whitelisted - showing login screen")
+        if (DevMode.DEV_MODE_ENABLED) {
+            DevMode.getDeviceConfig()?.let { config ->
+                viewModel.signIn(config.email, config.password, onSuccess = onLoggedIn)
             }
         }
     }
+
+    val isLoading = state.loading || googleState.loading
+    val error = state.error ?: googleState.error
 
     Scaffold { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .imePadding()  // ← Keyboard padding
-                .verticalScroll(rememberScrollState())  // ← Scrollable
-                .padding(horizontal = 24.dp, vertical = 24.dp),  // More top padding
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(1.dp)  // Fixed spacing instead of Center
+            verticalArrangement = Arrangement.spacedBy(1.dp)
         ) {
-
-            // Show loading or login form
-            if (state.loading) {
+            if (isLoading) {
+                Spacer(Modifier.height(200.dp))
                 CircularProgressIndicator()
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    if (DevMode.isDeviceWhitelisted()) "Auto-logging in..." else "Logging in...",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Text("Signing in...", style = MaterialTheme.typography.bodyMedium)
             } else {
-                // App branding
-                Text(
-                    "GiftQuest",
-                    style = MaterialTheme.typography.displayMedium
-                )
-
+                Text("GiftQuest", style = MaterialTheme.typography.displayMedium)
                 Text(
                     "Gift Discovery Made Easy",
                     style = MaterialTheme.typography.bodyLarge,
@@ -86,40 +75,49 @@ fun LoginScreen(
 
                 Spacer(Modifier.height(48.dp))
 
-                // Error message
-                state.error?.let { error ->
+                // Error banner
+                error?.let {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        )
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                     ) {
-                        Text(
-                            text = error,
-                            modifier = Modifier.padding(16.dp),
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
+                        Text(it, modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onErrorContainer)
                     }
                     Spacer(Modifier.height(16.dp))
                 }
 
-                // Login form (shown for non-whitelisted devices or if auto-login fails)
+                // ── Social buttons ───────────────────────────────────────────
+                GoogleSignInButton(
+                    onClick = { googleVm.signInWithGoogle(context, onLoggedIn) },
+                    modifier = Modifier.fillMaxWidth(),
+                    text = "Continue with Google",
+                    enabled = !isLoading
+                )
+
+                Spacer(Modifier.height(20.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    HorizontalDivider(modifier = Modifier.weight(1f))
+                    Text("  or  ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(modifier = Modifier.weight(1f))
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                // ── Email / Password ─────────────────────────────────────────
                 OutlinedTextField(
                     value = email,
                     onValueChange = { email = it },
                     label = { Text("Email") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Email,
-                        imeAction = ImeAction.Next
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onNext = { /* Focus moves to password automatically */ }
-                    )
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next)
                 )
 
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(8.dp))
 
                 OutlinedTextField(
                     value = password,
@@ -128,63 +126,34 @@ fun LoginScreen(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
-                        imeAction = ImeAction.Done
-                    ),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(
                         onDone = {
-                            if (email.isNotBlank() && password.isNotBlank()) {
-                                viewModel.signIn(
-                                    email = email.trim(),
-                                    password = password,
-                                    onSuccess = onLoggedIn
-                                )
-                            }
+                            if (email.isNotBlank() && password.isNotBlank())
+                                viewModel.signIn(email.trim(), password, onSuccess = onLoggedIn)
                         }
                     )
                 )
 
-                Spacer(Modifier.height(1.dp))
-
-                // Forgot password
-                TextButton(
-                    onClick = onForgotPassword,
-                    modifier = Modifier.align(Alignment.End)
-                ) {
+                TextButton(onClick = onForgotPassword, modifier = Modifier.align(Alignment.End)) {
                     Text("Forgot Password?")
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(8.dp))
 
-                // Login button
                 Button(
-                    onClick = {
-                        viewModel.signIn(
-                            email = email.trim(),
-                            password = password,
-                            onSuccess = onLoggedIn
-                        )
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
+                    onClick = { viewModel.signIn(email.trim(), password, onSuccess = onLoggedIn) },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
                     enabled = email.isNotBlank() && password.isNotBlank()
                 ) {
                     Text("Log In", style = MaterialTheme.typography.titleMedium)
                 }
 
-                Spacer(Modifier.height(1.dp))
+                Spacer(Modifier.height(8.dp))
 
-                // Sign up
-                Row(
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                     Text("Don't have an account?")
-                    TextButton(onClick = onCreateAccount) {
-                        Text("Sign Up")
-                    }
+                    TextButton(onClick = onCreateAccount) { Text("Sign Up") }
                 }
             }
         }

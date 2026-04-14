@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -33,6 +34,8 @@ import java.io.File
 @Composable
 fun ProfileScreen(
     onBack: () -> Unit,
+    onLoggedOut: () -> Unit,
+    onAccountDeleted: () -> Unit,
     viewModel: ProfileViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -40,332 +43,256 @@ fun ProfileScreen(
     val scope = rememberCoroutineScope()
 
     var showPhotoPickerDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showLogoutDialog by remember { mutableStateOf(false) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
-    var showPermissionDialog by remember { mutableStateOf(false) }
 
-    // Photo picker launcher for gallery
-    val galleryLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
+    // Gallery picker
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
             scope.launch {
-                val success = viewModel.uploadPhotoAndSave(it)
-                if (success) {
-                    Toast.makeText(context, "Photo uploaded and saved!", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Photo upload failed. Check logs.", Toast.LENGTH_LONG).show()
-                }
+                val success = viewModel.uploadPhotoAndSave(context, it)
+                Toast.makeText(
+                    context,
+                    if (success) "Photo updated!" else "Upload failed",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }
 
-    // Camera launcher - MUST be declared before cameraPermissionLauncher
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
+    // Camera launcher
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success && tempCameraUri != null) {
             scope.launch {
-                val uploaded = viewModel.uploadPhotoAndSave(tempCameraUri!!)
-                if (uploaded) {
-                    Toast.makeText(context, "Photo uploaded and saved!", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Photo upload failed. Check logs.", Toast.LENGTH_LONG).show()
-                }
+                val uploaded = viewModel.uploadPhotoAndSave(context, tempCameraUri!!)
+                Toast.makeText(context, if (uploaded) "Photo updated!" else "Upload failed", Toast.LENGTH_SHORT).show()
             }
-        } else if (!success) {
-            Toast.makeText(context, "Photo capture cancelled", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // Camera permission launcher - uses cameraLauncher, so must come after
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            // Permission granted, proceed with camera
-            val cameraUri = createCameraFile(context)
-            if (cameraUri != null) {
-                tempCameraUri = cameraUri
-                cameraLauncher.launch(cameraUri)
-            }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            val uri = createCameraFile(context)
+            if (uri != null) { tempCameraUri = uri; cameraLauncher.launch(uri) }
         } else {
             Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
         }
     }
 
+    // ── Delete confirmation dialog ────────────────────────────────────────────
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete Account?") },
+            text = { Text("This will permanently delete your account and all your data. This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteDialog = false
+                        viewModel.deleteAccount(onDeleted = onAccountDeleted)
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // ── Logout confirmation dialog ────────────────────────────────────────────
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = { Text("Log Out?") },
+            text = { Text("You'll need to log back in to access your account.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLogoutDialog = false
+                    onLoggedOut()
+                }) { Text("Log Out") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // ── Photo picker dialog ───────────────────────────────────────────────────
+    if (showPhotoPickerDialog) {
+        AlertDialog(
+            onDismissRequest = { showPhotoPickerDialog = false },
+            title = { Text("Change Photo") },
+            confirmButton = {
+                Column(Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = { showPhotoPickerDialog = false; galleryLauncher.launch("image/*") },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("📷 Choose from Gallery") }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            showPhotoPickerDialog = false
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                                == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                val uri = createCameraFile(context)
+                                if (uri != null) { tempCameraUri = uri; cameraLauncher.launch(uri) }
+                            } else {
+                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("📸 Take Photo") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPhotoPickerDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     Scaffold(
-        topBar = {
-            AppTopBar(
-                title = "Edit Profile",
-                onBack = onBack
-            )
-        }
+        topBar = { AppTopBar(title = "Profile & Settings", onBack = onBack) }
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .imePadding()  // ← Keyboard padding
-                .verticalScroll(rememberScrollState())  // ← Scrollable
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-
-            // Show loading indicator
             if (state.loading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Spacer(Modifier.height(16.dp))
-                        Text("Loading...", style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
+                Spacer(Modifier.height(200.dp))
+                CircularProgressIndicator()
                 return@Column
             }
 
-            // Show error message
             state.error?.let { error ->
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    )
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = error,
-                            modifier = Modifier.weight(1f),
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        IconButton(onClick = { viewModel.clearError() }) {
-                            Text("✕")
-                        }
+                    Row(Modifier.padding(16.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                        Text(error, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer)
+                        IconButton(onClick = { viewModel.clearError() }) { Text("✕") }
                     }
                 }
             }
 
-            // Profile Photo Section
-            Box(
-                modifier = Modifier.size(120.dp),
-                contentAlignment = Alignment.BottomEnd
-            ) {
+            // ── Profile Photo ─────────────────────────────────────────────────
+            Box(modifier = Modifier.size(120.dp), contentAlignment = Alignment.BottomEnd) {
                 if (state.photoUrl.isNotEmpty()) {
                     AsyncImage(
                         model = state.photoUrl,
                         contentDescription = "Profile Photo",
-                        modifier = Modifier
-                            .size(120.dp)
-                            .clip(CircleShape),
-                        contentScale = ContentScale.Crop,
-                        onError = {
-                            android.util.Log.e("GiftQuest", "Failed to load image: ${state.photoUrl}")
-                        }
+                        modifier = Modifier.size(120.dp).clip(CircleShape),
+                        contentScale = ContentScale.Crop
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.Default.AccountCircle,
-                        contentDescription = "Default Profile",
+                        Icons.Default.AccountCircle,
+                        contentDescription = null,
                         modifier = Modifier.size(120.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-
-                // Camera button
                 FloatingActionButton(
                     onClick = { showPhotoPickerDialog = true },
                     modifier = Modifier.size(40.dp),
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.CameraAlt,
-                        contentDescription = "Change Photo",
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    Icon(Icons.Default.CameraAlt, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Helper text
+            Spacer(Modifier.height(8.dp))
             Text(
-                text = if (state.photoUrl.isNotEmpty()) "Tap camera to change photo" else "Tap camera to add photo",
+                if (state.photoUrl.isNotEmpty()) "Tap camera to change photo" else "Tap camera to add photo",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(Modifier.height(32.dp))
 
-            // Nickname Field
+            // ── Account Info ──────────────────────────────────────────────────
+            Text("Account", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
+
+            Spacer(Modifier.height(8.dp))
+
             OutlinedTextField(
                 value = state.nickname,
                 onValueChange = { viewModel.updateNickname(it) },
                 label = { Text("Nickname") },
-                placeholder = { Text("Enter your nickname") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
 
-            // Save Button
             Button(
-                onClick = {
-                    viewModel.saveProfile()
-                    Toast.makeText(context, "Profile saved!", Toast.LENGTH_SHORT).show()
-                    onBack()
-                },
+                onClick = { viewModel.saveProfile(onDone = onBack) },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 enabled = state.nickname.isNotBlank() && !state.loading
             ) {
-                if (state.loading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                } else {
-                    Text("Save Profile")
-                }
+                Text("Save Changes")
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(32.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(24.dp))
 
-            // Info card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+            // ── Danger Zone ───────────────────────────────────────────────────
+            Text("Account Actions", style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primary)
+
+            Spacer(Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = { showLogoutDialog = true },
+                modifier = Modifier.fillMaxWidth().height(48.dp)
+            ) {
+                Text("Log Out")
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = { showDeleteDialog = true },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
                 )
             ) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(
-                        "ℹ️ Note",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Photos are uploaded and saved immediately. Your nickname is saved when you tap 'Save Profile'.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                Text("Delete Account")
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(32.dp))
 
-            // Current UID (read-only) - for debugging
+            // ── User ID (debug) ───────────────────────────────────────────────
             OutlinedTextField(
                 value = state.uid,
-                onValueChange = { },
+                onValueChange = {},
                 label = { Text("User ID") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 readOnly = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    disabledTextColor = MaterialTheme.colorScheme.onSurface,
-                    disabledBorderColor = MaterialTheme.colorScheme.outline,
-                    disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
-                ),
                 enabled = false
-            )
-        }
-
-        // Photo Picker Dialog
-        if (showPhotoPickerDialog) {
-            AlertDialog(
-                onDismissRequest = { showPhotoPickerDialog = false },
-                title = { Text("Choose Photo") },
-                text = { Text("Select how you want to add a profile photo") },
-                confirmButton = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                showPhotoPickerDialog = false
-                                galleryLauncher.launch("image/*")
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("📷 Choose from Gallery")
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                showPhotoPickerDialog = false
-                                // Check camera permission first
-                                when (PackageManager.PERMISSION_GRANTED) {
-                                    ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.CAMERA
-                                    ) -> {
-                                        // Permission already granted
-                                        val cameraUri = createCameraFile(context)
-                                        if (cameraUri != null) {
-                                            tempCameraUri = cameraUri
-                                            cameraLauncher.launch(cameraUri)
-                                        }
-                                    }
-                                    else -> {
-                                        // Request permission
-                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("📸 Take Photo")
-                        }
-                    }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = { showPhotoPickerDialog = false }
-                    ) {
-                        Text("Cancel")
-                    }
-                }
             )
         }
     }
 }
 
-/**
- * Helper function to create a file URI for camera photos
- */
 private fun createCameraFile(context: android.content.Context): Uri? {
     return try {
-        // Create temp file in cache directory
-        val photoFile = File.createTempFile(
-            "profile_photo_${System.currentTimeMillis()}",
-            ".jpg",
-            context.cacheDir
-        ).apply {
-            createNewFile()
-            deleteOnExit()
-        }
-
-        android.util.Log.d("GiftQuest", "Created camera file: ${photoFile.absolutePath}")
-
-        // Get URI using FileProvider
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            photoFile
-        )
-
-        android.util.Log.d("GiftQuest", "Camera file URI: $uri")
-        uri
-
+        val file = File.createTempFile("profile_${System.currentTimeMillis()}", ".jpg", context.cacheDir)
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     } catch (e: Exception) {
-        android.util.Log.e("GiftQuest", "Failed to create camera file", e)
-        Toast.makeText(context, "Camera error: ${e.message}", Toast.LENGTH_SHORT).show()
         null
     }
 }

@@ -1,5 +1,6 @@
 package com.example.giftquest.data
 
+import android.util.Log
 import com.example.giftquest.data.model.Item
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
@@ -9,32 +10,31 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
 
 class ItemsRepository(
-    private val db: FirebaseFirestore = FirebaseFirestore.getInstance()
+    private val fs: FirebaseFirestore = FirebaseFirestore.getInstance()
 ) {
 
-    /**
-     * Get real-time stream of items for a specific user
-     */
-    fun itemsFlow(ownerUid: String): Flow<List<Item>> = callbackFlow {
-        val listener = db.collection("users")
-            .document(ownerUid)
+    fun itemsFlow(userId: String): Flow<List<Item>> = callbackFlow {
+        val listener = fs.collection("users")
+            .document(userId)
             .collection("items")
             .orderBy("position", Query.Direction.ASCENDING)
-            .addSnapshotListener { snaps, error ->
+            .addSnapshotListener { snapshots, error ->
                 if (error != null) {
-                    close(error)
-                    return@addSnapshotListener
+                    Log.w("GiftQuest", "Firestore listener error: ${error.message}")
+                    return@addSnapshotListener  // ← silently ignore, don't crash
                 }
 
-                val items = snaps?.documents?.map { doc ->
+                val items = snapshots?.documents?.map { doc ->
                     Item(
                         remoteId = doc.id,
                         title = doc.getString("title") ?: "",
-                        notes = doc.getString("notes") ?: "",
-                        createdByUid = ownerUid,
+                        category = doc.getString("category") ?: "",
+                        price = doc.getDouble("price") ?: 0.0,
+                        link = doc.getString("link") ?: "",
+                        note = doc.getString("note") ?: "",
                         createdAtMillis = doc.getLong("createdAtMillis") ?: System.currentTimeMillis(),
-                        position = doc.getDouble("position") ?: 0.0,
-                        coupleId = ownerUid // Using ownerUid as identifier
+                        updatedAtMillis = doc.getLong("updatedAtMillis") ?: System.currentTimeMillis(),
+                        position = doc.getDouble("position") ?: 0.0
                     )
                 } ?: emptyList()
 
@@ -44,86 +44,119 @@ class ItemsRepository(
         awaitClose { listener.remove() }
     }
 
-    /**
-     * Add a new item to user's list
-     */
-    suspend fun addItem(title: String, uid: String, coupleId: String) {
-        android.util.Log.d("GiftQuest", "=== ITEMS REPO ADD START ===")
-        android.util.Log.d("GiftQuest", "Collection path: users/$uid/items")
+    suspend fun addItem(
+        title: String,
+        category: String,
+        price: Double,
+        link: String,
+        note: String,
+        userId: String
+    ) {
+        val col = fs.collection("users")
+            .document(userId)
+            .collection("items")
 
-        val itemsRef = db.collection("users").document(uid).collection("items")
         val now = System.currentTimeMillis()
 
-        // Calculate next position
         val nextPos = try {
-            val last = itemsRef
-                .orderBy("position", Query.Direction.DESCENDING)
-                .limit(1)
-                .get()
-                .await()
+            val last = col.orderBy("position", Query.Direction.DESCENDING)
+                .limit(1).get().await()
             (last.documents.firstOrNull()?.getDouble("position") ?: -1.0) + 1.0
-        } catch (e: Exception) {
-            android.util.Log.w("GiftQuest", "Could not get last position: ${e.message}")
-            0.0
-        }
-
-        android.util.Log.d("GiftQuest", "Next position: $nextPos")
+        } catch (e: Exception) { 0.0 }
 
         val data = mapOf(
             "title" to title,
-            "notes" to "",
-            "createdByUid" to uid,
+            "category" to category,
+            "price" to price,
+            "link" to link,
+            "note" to note,
+            "position" to nextPos,
             "createdAtMillis" to now,
-            "position" to nextPos
+            "updatedAtMillis" to now
         )
 
-        android.util.Log.d("GiftQuest", "Writing document with data: $data")
-
-        itemsRef.add(data).await()
-
-        android.util.Log.d("GiftQuest", "✅ Document written to Firestore")
+        col.add(data).await()
     }
 
-    /**
-     * Update an existing item
-     */
-    suspend fun updateItem(remoteId: String, title: String, notes: String, ownerUid: String) {
-        val itemRef = db.collection("users")
-            .document(ownerUid)
+    suspend fun updateItem(
+        remoteId: String,
+        userId: String,
+        title: String,
+        category: String,
+        price: Double,
+        link: String,
+        note: String
+    ) {
+        val data = mapOf(
+            "title" to title,
+            "category" to category,
+            "price" to price,
+            "link" to link,
+            "note" to note,
+            "updatedAtMillis" to System.currentTimeMillis()
+        )
+
+        fs.collection("users")
+            .document(userId)
             .collection("items")
             .document(remoteId)
-
-        val data = mapOf(
-            "title" to title,
-            "notes" to notes
-        )
-
-        itemRef.update(data).await()
+            .update(data)
+            .await()
     }
 
-    /**
-     * Delete an item
-     */
-    suspend fun deleteItem(remoteId: String, ownerUid: String) {
-        db.collection("users")
-            .document(ownerUid)
+    suspend fun deleteItem(remoteId: String, userId: String) {
+        fs.collection("users")
+            .document(userId)
             .collection("items")
             .document(remoteId)
             .delete()
             .await()
     }
 
-    /**
-     * Reorder items by updating their positions
-     */
-    suspend fun reorder(remoteIdsInOrder: List<String>, ownerUid: String) {
-        val itemsRef = db.collection("users").document(ownerUid).collection("items")
-        val batch = db.batch()
+    suspend fun reorder(remoteIdsInOrder: List<String>, userId: String) {
+        val col = fs.collection("users")
+            .document(userId)
+            .collection("items")
+
+        val batch = fs.batch()
 
         remoteIdsInOrder.forEachIndexed { index, remoteId ->
-            batch.update(itemsRef.document(remoteId), mapOf("position" to index.toDouble()))
+            batch.update(
+                col.document(remoteId),
+                mapOf(
+                    "position" to index.toDouble(),
+                    "updatedAtMillis" to System.currentTimeMillis()
+                )
+            )
         }
 
         batch.commit().await()
+    }
+
+    /**
+     * Save the result of a guessing game for future points system.
+     */
+    suspend fun saveGameResult(
+        itemId: String,
+        itemOwnerId: String,
+        guesserUid: String,
+        guessCount: Int,
+        won: Boolean,
+        difficulty: String
+    ) {
+        val data = mapOf(
+            "itemId" to itemId,
+            "guesserUid" to guesserUid,
+            "guessCount" to guessCount,
+            "won" to won,
+            "difficulty" to difficulty,
+            "playedAtMillis" to System.currentTimeMillis()
+        )
+
+        fs.collection("users")
+            .document(itemOwnerId)
+            .collection("gameResults")
+            .add(data)
+            .await()
     }
 }

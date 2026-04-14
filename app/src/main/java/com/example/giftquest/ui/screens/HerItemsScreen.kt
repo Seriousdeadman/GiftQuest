@@ -8,7 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,7 +23,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.giftquest.data.GameResultsRepository
+import com.example.giftquest.data.model.GameResult
 import com.example.giftquest.ui.heritems.HerItemsViewModel
+import com.google.firebase.auth.FirebaseAuth
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.journeyapps.barcodescanner.ScanContract
@@ -33,6 +36,7 @@ import com.journeyapps.barcodescanner.ScanOptions
 @Composable
 fun HerItemsScreen(
     onBack: () -> Unit,
+    onGuess: (String) -> Unit,
     viewModel: HerItemsViewModel = viewModel()
 ) {
     val context = LocalContext.current
@@ -41,28 +45,23 @@ fun HerItemsScreen(
     var showQRCode by remember { mutableStateOf(false) }
     var qrCodeBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    // Generate QR code when share code is available
     LaunchedEffect(state.myShareCode) {
         if (state.myShareCode.isNotBlank()) {
             qrCodeBitmap = generateQRCode(state.myShareCode)
         }
     }
 
-    // QR Code Scanner launcher
-    val scanLauncher = rememberLauncherForActivityResult(
-        contract = ScanContract()
-    ) { result ->
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         if (result.contents != null) {
             partnerCodeInput = result.contents.uppercase()
-            Toast.makeText(context, "Code scanned: ${result.contents}", Toast.LENGTH_SHORT).show()
+            viewModel.linkWith(result.contents.uppercase()) // auto-link immediately
         } else {
             Toast.makeText(context, "Scan cancelled", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // Camera permission launcher
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
+        ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
             val options = ScanOptions().apply {
@@ -73,7 +72,7 @@ fun HerItemsScreen(
             }
             scanLauncher.launch(options)
         } else {
-            Toast.makeText(context, "Camera permission is required to scan QR codes", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Camera permission required", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -89,16 +88,9 @@ fun HerItemsScreen(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-        ) {
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             if (state.loading) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
                 return@Column
@@ -107,23 +99,15 @@ fun HerItemsScreen(
             state.error?.let { error ->
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    )
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                 ) {
                     Row(
                         modifier = Modifier.padding(16.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = error,
-                            modifier = Modifier.weight(1f),
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                        IconButton(onClick = { viewModel.clearError() }) {
-                            Text("✕")
-                        }
+                        Text(error, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer)
+                        IconButton(onClick = { viewModel.clearError() }) { Text("✕") }
                     }
                 }
             }
@@ -142,7 +126,9 @@ fun HerItemsScreen(
             } else {
                 LinkedContent(
                     partnerItems = state.partnerItems,
-                    onUnlinkClick = { viewModel.unlink() }
+                    partnerUid = state.partnerUid ?: "",  // ← fixed: now passed
+                    onUnlinkClick = { viewModel.unlink() },
+                    onGuess = onGuess
                 )
             }
         }
@@ -163,83 +149,49 @@ private fun NotLinkedContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .imePadding()  // ← Keyboard padding
-            .verticalScroll(rememberScrollState())  // ← Scrollable
+            .imePadding()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Spacer(Modifier.height(16.dp))
-
-        Text(
-            "Not Linked with Partner",
-            style = MaterialTheme.typography.headlineMedium,
-            textAlign = TextAlign.Center
-        )
-
-        Text(
-            "Share your code with your partner:",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Text("Not Linked with Partner", style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
+        Text("Share your code with your partner:", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = myShareCode.ifBlank { "Loading..." },
                     style = MaterialTheme.typography.displaySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.primary
                 )
-
                 Spacer(Modifier.height(16.dp))
-
-                OutlinedButton(
-                    onClick = onToggleQRCode,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.QrCode,
-                        contentDescription = "QR Code",
-                        modifier = Modifier.size(20.dp)
-                    )
+                OutlinedButton(onClick = onToggleQRCode, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(if (showQRCode) "Hide QR Code" else "Show QR Code")
                 }
-
                 if (showQRCode && qrCodeBitmap != null) {
                     Spacer(Modifier.height(16.dp))
                     Card(
                         modifier = Modifier.size(250.dp).padding(8.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        )
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Image(
                             bitmap = qrCodeBitmap.asImageBitmap(),
-                            contentDescription = "QR Code for $myShareCode",
+                            contentDescription = "QR Code",
                             modifier = Modifier.fillMaxSize().padding(16.dp)
                         )
                     }
-                    Text(
-                        "Let your partner scan this code",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("Let your partner scan this code", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-        Text(
-            "Enter partner's code:",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Text("Enter partner's code:", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         OutlinedTextField(
             value = partnerCodeInput,
@@ -250,55 +202,24 @@ private fun NotLinkedContent(
             singleLine = true
         )
 
-        OutlinedButton(
-            onClick = onScanQRCode,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(
-                imageVector = Icons.Default.QrCodeScanner,
-                contentDescription = "Scan QR Code",
-                modifier = Modifier.size(20.dp)
-            )
+        OutlinedButton(onClick = onScanQRCode, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
             Text("Scan Partner's QR Code")
         }
 
-        Button(
-            onClick = onLinkClick,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            enabled = partnerCodeInput.isNotBlank()
-        ) {
+        Button(onClick = onLinkClick, modifier = Modifier.fillMaxWidth().height(56.dp), enabled = partnerCodeInput.isNotBlank()) {
             Text("Link with Partner", style = MaterialTheme.typography.titleMedium)
         }
 
         Spacer(Modifier.weight(1f))
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("💡 How it works:", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "1. Share your code above with your partner",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    "2. Ask them to enter it in their app",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    "3. You'll instantly see each other's wishlists!",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("1. Share your code above with your partner", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("2. Ask them to enter it in their app", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("3. You'll instantly see each other's wishlists!", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -307,14 +228,29 @@ private fun NotLinkedContent(
 @Composable
 private fun LinkedContent(
     partnerItems: List<com.example.giftquest.data.model.Item>,
-    onUnlinkClick: () -> Unit
+    partnerUid: String,
+    onUnlinkClick: () -> Unit,
+    onGuess: (String) -> Unit
 ) {
+    val currentUid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+
+    val gameResults by produceState(
+        initialValue = emptyMap<String, GameResult>(),
+        key1 = partnerUid
+    ) {
+        if (partnerUid.isNotBlank()) {
+            GameResultsRepository()
+                .gameResultsFlow(currentUid, partnerUid)
+                .collect { results ->
+                    value = results.associateBy { it.itemId }
+                }
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Card(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer
-            )
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -324,29 +260,22 @@ private fun LinkedContent(
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Linked with Partner", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "${partnerItems.size} items on wishlist",
+                        "${partnerItems.size} gifts · ${gameResults.size} guessed",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 OutlinedButton(
                     onClick = onUnlinkClick,
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Text("Unlink")
-                }
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Unlink") }
             }
         }
 
         if (partnerItems.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize().padding(32.dp),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "Your partner hasn't added any items yet.",
+                    "Your partner hasn't added any gifts yet.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -357,20 +286,16 @@ private fun LinkedContent(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(partnerItems) { item ->
-                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(item.title, style = MaterialTheme.typography.titleMedium)
-                            if (item.notes.isNotBlank()) {
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    item.notes,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
+                itemsIndexed(partnerItems) { _, item ->
+                    val result = gameResults[item.remoteId]
+                    AnonymizedGiftCard(
+                        itemId = item.remoteId,
+                        category = item.category,
+                        isGuessed = result != null,
+                        revealedTitle = result?.itemSnapshot?.title,
+                        guessCount = result?.guessCount ?: 0,
+                        onClick = { onGuess(item.remoteId) }
+                    )
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -382,16 +307,10 @@ private fun generateQRCode(text: String, size: Int = 512): Bitmap? {
     return try {
         val writer = QRCodeWriter()
         val bitMatrix = writer.encode(text, BarcodeFormat.QR_CODE, size, size)
-        val width = bitMatrix.width
-        val height = bitMatrix.height
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
-
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                bitmap.setPixel(
-                    x, y,
-                    if (bitMatrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
-                )
+        val bitmap = Bitmap.createBitmap(bitMatrix.width, bitMatrix.height, Bitmap.Config.RGB_565)
+        for (x in 0 until bitMatrix.width) {
+            for (y in 0 until bitMatrix.height) {
+                bitmap.setPixel(x, y, if (bitMatrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
             }
         }
         bitmap

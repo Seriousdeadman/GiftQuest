@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.giftquest.data.ItemsRepository
 import com.example.giftquest.data.model.Item
 import com.example.giftquest.data.remote.PairingRepository
+import com.example.giftquest.data.user.UserDocRepository
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -21,7 +22,8 @@ data class HerItemsUiState(
 class HerItemsViewModel(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val pairingRepo: PairingRepository = PairingRepository(),
-    private val itemsRepo: ItemsRepository = ItemsRepository()
+    private val itemsRepo: ItemsRepository = ItemsRepository(),
+    private val userRepo: UserDocRepository = UserDocRepository()
 ) : ViewModel() {
 
     private val uid: String = auth.currentUser?.uid ?: "anon"
@@ -29,23 +31,20 @@ class HerItemsViewModel(
     private val _state = MutableStateFlow(HerItemsUiState(loading = true))
     val state: StateFlow<HerItemsUiState> = _state.asStateFlow()
 
-    private var linkListener: com.google.firebase.firestore.ListenerRegistration? = null
-
     init {
         if (uid != "anon") {
-            // Load my share code
             loadShareCode()
 
-            // Listen for link status changes
-            linkListener = pairingRepo.observeMyLinkStatus(uid) { partnerUid ->
-                viewModelScope.launch {
+            viewModelScope.launch {
+                userRepo.meFlow().collect { userDoc ->
+                    val partnerUid = userDoc?.linkedWith
+
                     _state.update { it.copy(
                         partnerUid = partnerUid,
                         isLinked = partnerUid != null,
                         loading = false
                     )}
 
-                    // Start listening to partner's items if linked
                     if (partnerUid != null) {
                         observePartnerItems(partnerUid)
                     } else {
@@ -54,11 +53,6 @@ class HerItemsViewModel(
                 }
             }
         }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        linkListener?.remove()
     }
 
     private fun loadShareCode() {
